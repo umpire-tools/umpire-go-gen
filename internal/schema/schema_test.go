@@ -8,7 +8,7 @@ import (
 func TestSchemaUnmarshal(t *testing.T) {
 	data := `{
   "fields": [
-    {"name": "country", "required": true, "isEmpty": false},
+    {"name": "country", "required": true },
     {"name": "promoCode", "type": "string"}
   ],
   "conditions": [
@@ -48,8 +48,8 @@ func TestSchemaUnmarshal(t *testing.T) {
 	if !s.Fields[0].Required {
 		t.Error("expected country to be required")
 	}
-	if s.Fields[0].IsEmpty != nil && *s.Fields[0].IsEmpty {
-		t.Error("expected isEmpty to be false")
+	if s.Fields[0].IsEmpty != "" {
+		t.Error("expected isEmpty to be empty string")
 	}
 	if s.Fields[1].Name != "promoCode" {
 		t.Errorf("expected field name 'promoCode', got %q", s.Fields[1].Name)
@@ -173,10 +173,9 @@ func TestExprUnmarshal(t *testing.T) {
 }
 
 func TestSchemaRoundTrip(t *testing.T) {
-	isEmpty := false
 	original := Schema{
 		Fields: []FieldDef{
-			{Name: "country", Required: true, IsEmpty: &isEmpty},
+			{Name: "country", Required: true, IsEmpty: "string"},
 			{Name: "promoCode"},
 		},
 		Conditions: []ConditionDef{
