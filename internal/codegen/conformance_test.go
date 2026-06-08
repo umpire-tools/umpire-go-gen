@@ -500,6 +500,16 @@ func convertRule(fr FixtureRuleDef, s *schema.Schema) {
 			}
 		}
 
+		// Handle check rules with op/pattern at top level (e.g., {"type": "check", "field": "X", "op": "matches", "pattern": "..."})
+		if fr.Type == "check" && fr.Op != "" {
+			e := &schema.Expr{Op: fr.Op, Field: fr.Field}
+			if fr.Pattern != "" {
+				e.Value = fr.Pattern
+				e.Pattern = fr.Pattern
+			}
+			r.Check = e
+		}
+
 		s.Rules = append(s.Rules, r)
 	}
 }
