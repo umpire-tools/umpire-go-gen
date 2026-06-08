@@ -40,7 +40,7 @@ type Expr struct {
 // Rule is a tagged union representing different rule types.
 // The "type" field determines which additional fields are relevant.
 type Rule struct {
-	Type      string   `json:"type"`       // "enabledWhen", "disables", "requires", "fairWhen", "check", "excluded"
+	Type      string   `json:"type"` // "enabledWhen", "disables", "requires", "fairWhen", "check", "excluded"
 	Field     string   `json:"field,omitempty"`
 	Fields    []string `json:"fields,omitempty"`
 	Expr      *Expr    `json:"expr,omitempty"`

@@ -110,8 +110,8 @@ func TestExprUnmarshal(t *testing.T) {
 		expected Expr
 	}{
 		{
-			name: "eq operator",
-			json: `{"op": "eq", "field": "country", "value": "US"}`,
+			name:     "eq operator",
+			json:     `{"op": "eq", "field": "country", "value": "US"}`,
 			expected: Expr{Op: "eq", Field: "country", Value: "US"},
 		},
 		{
@@ -126,18 +126,18 @@ func TestExprUnmarshal(t *testing.T) {
 			},
 		},
 		{
-			name: "condEq operator",
-			json: `{"op": "condEq", "condition": "userRole", "value": "admin"}`,
+			name:     "condEq operator",
+			json:     `{"op": "condEq", "condition": "userRole", "value": "admin"}`,
 			expected: Expr{Op: "condEq", Condition: "userRole", Value: "admin"},
 		},
 		{
-			name: "not operator",
-			json: `{"op": "not", "exprs": [{"op": "present", "field": "country"}]}`,
+			name:     "not operator",
+			json:     `{"op": "not", "exprs": [{"op": "present", "field": "country"}]}`,
 			expected: Expr{Op: "not", Exprs: []Expr{{Op: "present", Field: "country"}}},
 		},
 		{
-			name: "gt operator with number",
-			json: `{"op": "gt", "field": "itemsCount", "value": 5}`,
+			name:     "gt operator with number",
+			json:     `{"op": "gt", "field": "itemsCount", "value": 5}`,
 			expected: Expr{Op: "gt", Field: "itemsCount", Value: float64(5)},
 		},
 	}

@@ -46,7 +46,9 @@ func toPascalCase(s string) string {
 
 // baseName extracts the base name from a file path and converts it to PascalCase.
 // E.g. "checkout.umpire.json" -> "Checkout"
-//      "/path/to/my-schema.umpire.json" -> "MySchema"
+//
+//	"/path/to/my-schema.umpire.json" -> "MySchema"
+//
 // Suffix stripping is case-insensitive.
 func baseName(inputPath string) string {
 	// Get the filename portion
