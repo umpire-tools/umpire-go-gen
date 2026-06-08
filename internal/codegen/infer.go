@@ -67,24 +67,27 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		}
 	}
 
-	// Build field type info
-	inferred := &InferredSchema{}
-	for _, f := range s.Fields {
-		ti := FieldTypeInfo{
-			Name:    f.Name,
-			JSONTag: camelToJSONTag(GoFieldName(f.Name)),
-		}
-
-		// Use type hint if present
-		if f.TypeHint != "" {
-			ti.GoType = GoTypeName(f.TypeHint)
-		} else {
-			// Infer from expression usage, default to *string if ambiguous
-			ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
-		}
-
-		inferred.Fields = append(inferred.Fields, ti)
+// Build field type info
+inferred := &InferredSchema{}
+for _, f := range s.Fields {
+	ti := FieldTypeInfo{
+		Name:    f.Name,
+		JSONTag: camelToJSONTag(GoFieldName(f.Name)),
 	}
+
+	// Use explicit type hint if present
+	if f.TypeHint != "" {
+		ti.GoType = GoTypeName(f.TypeHint)
+	} else if f.IsEmpty != "" {
+		// Infer from isEmpty type indicator
+		ti.GoType = goTypeFromIsEmpty(f.IsEmpty)
+	} else {
+		// Infer from expression usage, default to *string if ambiguous
+		ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
+	}
+
+	inferred.Fields = append(inferred.Fields, ti)
+}
 
 	// Build condition type info
 	for _, c := range s.Conditions {
@@ -140,6 +143,17 @@ func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[s
 		}
 	}
 
+	// Check all rule.Expr (when conditions) that reference this field
+	for _, rule := range s.Rules {
+		if rule.Expr != nil {
+			if fieldInExpr(fieldName, rule.Expr) {
+				if t := peekFieldType(rule.Expr); t != "" {
+					return GoTypeForField(t, true)
+				}
+			}
+		}
+	}
+
 	// Check disabledWhen and fairWhen rules that reference this field
 	for _, rule := range s.Rules {
 		if rule.DisabledWhen != nil {
@@ -167,6 +181,28 @@ func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[s
 
 	// Default fallback: *string
 	return GoStringPtr
+}
+
+// goTypeFromIsEmpty maps the isEmpty type indicator to a GoType.
+// The isEmpty values from the schema are: "string", "number", "boolean", "array", "object".
+// These imply non-pointer types since the field has a defined empty state.
+func goTypeFromIsEmpty(isEmpty string) GoType {
+	switch isEmpty {
+	case "string":
+		return GoString
+	case "number":
+		return GoFloat64
+	case "boolean":
+		return GoBool
+	case "array":
+		return GoStringSlice
+	case "object":
+		// Use a generic type for objects; JSON unmarshal will populate map[string]any
+		// For codegen purposes, we use a custom marker type
+		return GoType("map[string]any")
+	default:
+		return GoString
+	}
 }
 
 // peekFieldType looks at an expression and tries to determine the type of its field reference.
@@ -224,6 +260,10 @@ func GoTypeFromJSONValue(v any) GoType {
 	case bool:
 		return GoBool
 	case float64:
+		// JSON numbers are float64; detect integer values
+		if val == float64(int64(val)) {
+			return GoInt
+		}
 		return GoFloat64
 	case int:
 		return GoInt
@@ -258,8 +298,9 @@ func GoTypeFromJSONValue(v any) GoType {
 }
 
 // detectOneOfBranches looks for fields that appear to be oneOf/eitherOf branches.
-// Convention: fields sharing a common camelCase prefix (e.g., "paymentCreditCard",
-// "paymentBankTransfer") are grouped into a single enum type.
+// First, it uses explicit oneOf/eitherOf rules with Group and Branches fields to
+// determine the group name and branch field names. Then it falls back to
+// prefix-based grouping for schemas without explicit oneOf rules.
 func detectOneOfBranches(s *schema.Schema) []OneOfBranch {
 	type groupCollector struct {
 		groupBase string
@@ -269,22 +310,35 @@ func detectOneOfBranches(s *schema.Schema) []OneOfBranch {
 	groups := make(map[string]*groupCollector)
 	var order []string
 
-	// Scan rules for "oneOf" or "eitherOf" type rules
+	// Scan rules for "oneOf" or "eitherOf" type rules with explicit Group/Branches fields
 	for _, rule := range s.Rules {
 		if rule.Type == "oneOf" || rule.Type == "eitherOf" {
-			targetField := rule.Field
-			if targetField == "" && len(rule.Fields) > 0 {
-				targetField = rule.Fields[0]
+			groupName := rule.Group
+			if groupName == "" {
+				// Fallback: derive from field name
+				targetField := rule.Field
+				if targetField == "" && len(rule.Fields) > 0 {
+					targetField = rule.Fields[0]
+				}
+				if targetField == "" {
+					continue
+				}
+				groupName = GoFieldName(targetField)
 			}
-			if targetField == "" {
-				continue
-			}
+			branchBase := groupName + "Branch"
 
-			groupBase := GoFieldName(targetField)
-
-			if _, ok := groups[groupBase]; !ok {
-				groups[groupBase] = &groupCollector{groupBase: groupBase}
-				order = append(order, groupBase)
+			if _, ok := groups[branchBase]; !ok {
+				gc := &groupCollector{groupBase: groupName}
+				// Use explicit branch field names if available
+				for _, bf := range rule.Branches {
+					gc.branches = append(gc.branches, OneOfBranch{
+						GroupName: branchBase,
+						Branch:    GoFieldName(bf),
+						Index:     len(gc.branches),
+					})
+				}
+				groups[branchBase] = gc
+				order = append(order, branchBase)
 			}
 		}
 	}
@@ -343,6 +397,7 @@ func detectOneOfBranches(s *schema.Schema) []OneOfBranch {
 
 	return branches
 }
+
 
 // splitCamelCase splits a camelCase string into its component words.
 // Acronym runs (e.g., HTTP in HTTPResponse) are kept together.

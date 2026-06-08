@@ -10,10 +10,9 @@ import (
 )
 
 func TestGenerateSampleSchema(t *testing.T) {
-	isEmpty := false
 	s := &schema.Schema{
 		Fields: []schema.FieldDef{
-			{Name: "country", Required: true, IsEmpty: &isEmpty},
+			{Name: "country", Required: true, IsEmpty: "string"},
 			{Name: "promoCode"},
 			{Name: "itemsCount", TypeHint: "number"},
 			{Name: "paymentCreditCard"},
@@ -80,10 +79,9 @@ func TestGenerateSampleSchema(t *testing.T) {
 }
 
 func TestGenerateWritesToFile(t *testing.T) {
-	isEmpty := false
 	s := &schema.Schema{
 		Fields: []schema.FieldDef{
-			{Name: "country", Required: true, IsEmpty: &isEmpty},
+			{Name: "country", Required: true, IsEmpty: "string"},
 		},
 		Conditions: []schema.ConditionDef{
 			{Name: "isAdmin", Type: "boolean"},

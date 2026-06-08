@@ -48,6 +48,9 @@ type Rule struct {
 	Type      string   `json:"type"` // "enabledWhen", "disables", "requires", "fairWhen", "check", "excluded"
 	Field     string   `json:"field,omitempty"`
 	Fields    []string `json:"fields,omitempty"`
+	Group     string   `json:"group,omitempty"`
+	// Branches lists the field names that are branches of this oneOf/eitherOf group.
+	Branches  []string `json:"branches,omitempty"`
 	Expr      *Expr    `json:"expr,omitempty"`
 	Reason    string   `json:"reason,omitempty"`
 	DependsOn string   `json:"dependsOn,omitempty"`
@@ -63,6 +66,10 @@ type Rule struct {
 	FairWhen *Expr `json:"fairWhen,omitempty"`
 	// Check is an expression used for validation.
 	Check *Expr `json:"check,omitempty"`
+	// Source is the field that disables other fields (for "disables" rules).
+	Source string   `json:"source,omitempty"`
+	// Targets lists the fields disabled by the source (for "disables" rules).
+	Targets []string `json:"targets,omitempty"`
 }
 
 // Validate checks that the schema has required sections and valid references.
@@ -160,7 +167,7 @@ func validateRegexPatterns(e *Expr) error {
 
 	if e.Op == "matches" && e.Pattern != "" {
 		if _, err := regexp.Compile(e.Pattern); err != nil {
-			return fmt.Errorf("invalid regex pattern %q: %w", e.Pattern, err)
+			return fmt.Errorf("Invalid regex pattern %q: %w", e.Pattern, err)
 		}
 	}
 
