@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 func TestGenerateSampleSchema(t *testing.T) {
@@ -66,8 +66,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 		"Country FieldStatus",
 		"PromoCode FieldStatus",
 		"ItemsCount FieldStatus",
-		"ActivePaymentCreditCard PaymentBranch",
-		"ActivePaymentBankTransfer PaymentBranch",
+		"ActivePaymentBranch PaymentBranch",
 		"type PaymentBranch int",
 	}
 

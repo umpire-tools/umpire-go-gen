@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 func TestGoFieldName(t *testing.T) {

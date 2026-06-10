@@ -13,7 +13,7 @@ func TestLoadSchema(t *testing.T) {
 	schemaContent := `{
   "fields": [
     {"name": "country", "required": true},
-    {"name": "promoCode", "isEmpty": false}
+    {"name": "promoCode", "isEmpty": "string"}
   ],
   "conditions": [
     {"name": "userRole", "type": "string"},

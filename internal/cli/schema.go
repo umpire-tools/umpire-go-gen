@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 // LoadSchema reads and parses a .umpire.json file from the given path.

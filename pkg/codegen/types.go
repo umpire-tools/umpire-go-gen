@@ -16,6 +16,7 @@ const (
 	GoFloat64Ptr   GoType = "*float64"
 	GoStringSlice  GoType = "[]string"
 	GoFloat64Slice GoType = "[]float64"
+	GoMap          GoType = "map[string]any"
 )
 
 // Nullable reports whether this GoType is a pointer type.
@@ -86,6 +87,10 @@ func GoTypeName(jsonType string) GoType {
 		return GoStringSlice
 	case "number[]":
 		return GoFloat64Slice
+	case "array":
+		return GoStringSlice
+	case "object":
+		return GoMap
 	default:
 		return GoString
 	}
@@ -106,6 +111,9 @@ func GoTypeForField(t GoType, nullable bool) GoType {
 		return GoIntPtr
 	case GoFloat64:
 		return GoFloat64Ptr
+	case GoStringSlice, GoFloat64Slice, GoMap:
+		// Slices and maps are not made nullable - they're already reference types
+		return t
 	default:
 		return GoStringPtr
 	}

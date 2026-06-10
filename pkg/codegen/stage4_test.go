@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 func TestGenerateWithRules(t *testing.T) {
@@ -155,10 +155,10 @@ func TestCheckWithEmptyFields(t *testing.T) {
 
 	avail := Check(f, c, prev)
 
-	// country is a non-pointer string, so present check returns true
-	// Country should be enabled (present returns true for non-pointer fields)
-	if !avail.Country.Enabled {
-		t.Errorf("country should be enabled (present returns true for non-pointer)")
+	// country is a non-pointer string. The present expression compiles to
+	// "f.Country != \"\"" so the field is disabled until it holds a value.
+	if avail.Country.Enabled {
+		t.Errorf("country should NOT be enabled when empty (present checks non-empty for strings)")
 	}
 
 	if avail.Country.Satisfied {

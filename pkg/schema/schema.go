@@ -7,9 +7,33 @@ import (
 
 // Schema is the root structure of a .umpire.json file.
 type Schema struct {
-	Fields     []FieldDef     `json:"fields"`
-	Conditions []ConditionDef `json:"conditions"`
-	Rules      []Rule         `json:"rules"`
+	Fields            []FieldDef     `json:"fields"`
+	Conditions        []ConditionDef `json:"conditions"`
+	Rules             []Rule         `json:"rules"`
+	// BranchExpressions maps branch names (lowercase) to their activation expressions.
+	// For eitherOf rules, these are derived from the when clauses of rules in each branch.
+	BranchExpressions map[string]*Expr `json:"-"`
+	// BranchReasons maps branch names to the reasons for each sub-condition in that branch.
+	// For eitherOf rules, this is used to determine which sub-condition failed first.
+	BranchReasons map[string][]string `json:"-"`
+	// BranchSubConditions preserves the individual sub-conditions of each branch in order.
+	// This is used to find the first failing sub-condition's reason for the primary Reason.
+	BranchSubConditions map[string][]*Expr `json:"-"`
+	// BranchSubReasons maps branch names to a list of reasons, one per sub-condition.
+	// Parallel to BranchSubConditions.
+	BranchSubReasons map[string][]string `json:"-"`
+	// BranchOrder preserves the order of branches as they appear in the source.
+	// For eitherOf, this is used to determine which branch's reason to surface first.
+	BranchOrder []string `json:"-"`
+	// FieldBranches maps field names to the list of branch names for that field.
+	// This is used to scope branches to a specific target field.
+	FieldBranches map[string][]string `json:"-"`
+	// BranchKeys maps each branch's PascalCase field name to its original (lowercase) branch key.
+	// This is used to generate the "conflicts with X strategy" reason text for oneOf branches.
+	BranchKeys map[string]string `json:"-"`
+	// BranchRuleTypes maps a branch name to the type of its inner rules (e.g. "fairWhen" or "enabledWhen").
+	// For eitherOf, this tells the CheckGenerator whether the branch expressions drive Enabled or Fair.
+	BranchRuleTypes map[string]string `json:"-"`
 }
 
 // FieldDef defines a single field in the schema.
@@ -114,8 +138,23 @@ func (s *Schema) Validate() error {
 		}
 	}
 
-	// Check regex patterns in check expressions
+	// Check regex patterns in all expressions
 	for _, r := range s.Rules {
+		if r.Expr != nil {
+			if err := validateRegexPatterns(r.Expr); err != nil {
+				return err
+			}
+		}
+		if r.DisabledWhen != nil {
+			if err := validateRegexPatterns(r.DisabledWhen); err != nil {
+				return err
+			}
+		}
+		if r.FairWhen != nil {
+			if err := validateRegexPatterns(r.FairWhen); err != nil {
+				return err
+			}
+		}
 		if r.Check != nil {
 			if err := validateRegexPatterns(r.Check); err != nil {
 				return err
@@ -134,12 +173,12 @@ func validateExprRefs(e *Expr, fields map[string]bool, conditions map[string]boo
 	}
 
 	if e.Field != "" && !fields[e.Field] {
-		return fmt.Errorf("unknown field %q in expression", e.Field)
+		return fmt.Errorf("Unknown field %q in expression", e.Field)
 	}
 
 	if e.Condition != "" {
 		if !conditions[e.Condition] {
-			return fmt.Errorf("unknown condition %q in expression", e.Condition)
+			return fmt.Errorf("Unknown condition %q in expression", e.Condition)
 		}
 		if e.Op == "fieldInCond" {
 			t := conditionTypes[e.Condition]

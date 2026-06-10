@@ -3,7 +3,7 @@ package codegen
 import (
 	"testing"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 func TestCompile_EqOperator(t *testing.T) {
@@ -147,7 +147,7 @@ func TestCompile_InOperator(t *testing.T) {
 		{
 			name: "pointer string field",
 			expr: &schema.Expr{Op: "in", Field: "role", Value: []any{"admin", "user"}},
-			want: `f.Role != nil && contains(f.Role, *f.Role)`,
+			want: `(f.Role != nil && *f.Role == "admin" || f.Role != nil && *f.Role == "user")`,
 		},
 		{
 			name: "slice field",
@@ -215,7 +215,13 @@ func TestCompile_PresentOperator(t *testing.T) {
 }
 
 func TestCompile_ConditionOperators(t *testing.T) {
-	comp := NewExprCompiler(map[string]GoType{}, map[string]GoType{})
+	comp := NewExprCompiler(map[string]GoType{}, map[string]GoType{
+		"userRole":          GoString,
+		"isGuest":           GoBool,
+		"level":             GoInt,
+		"weatherBand":       GoString,
+		"availableStarters": GoStringSlice,
+	})
 
 	tests := []struct {
 		name string
@@ -228,7 +234,8 @@ func TestCompile_ConditionOperators(t *testing.T) {
 		{"condNot string", &schema.Expr{Op: "condNot", Condition: "userRole", Value: "guest"}, `c.UserRole != "guest"`},
 		{"condGt number", &schema.Expr{Op: "condGt", Condition: "level", Value: 1}, `c.Level > 1`},
 		{"condLt number", &schema.Expr{Op: "condLt", Condition: "level", Value: 10}, `c.Level < 10`},
-		{"condIn string[]", &schema.Expr{Op: "condIn", Condition: "roles", Value: []any{"admin", "user"}}, `contains(c.Roles, []string{"admin", "user"})`},
+		{"condIn string", &schema.Expr{Op: "condIn", Condition: "weatherBand", Value: "cold"}, `c.WeatherBand == "cold"`},
+		{"condIn string[]", &schema.Expr{Op: "condIn", Condition: "availableStarters", Value: []any{"Cole", "Holmes"}}, `(contains(c.AvailableStarters, "Cole") || contains(c.AvailableStarters, "Holmes"))`},
 	}
 
 	for _, tt := range tests {

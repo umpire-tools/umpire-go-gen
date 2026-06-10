@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"text/template"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 // Generator produces Go source code from an inferred schema.
@@ -18,7 +18,9 @@ type Generator struct {
 	Inferred         *InferredSchema
 	allRules         []schema.Rule
 	allFields        []schema.FieldDef // original field defs for Required/IsEmpty
+	allSchema        *schema.Schema    // full schema for accessing BranchExpressions
 	hasStrings       bool
+	hasStrconv       bool
 }
 
 // NewGenerator creates a Generator for the given schema and config.
@@ -30,7 +32,8 @@ func NewGenerator(schemaName, pkgName, fieldsName, conditionsName string, inferr
 		ConditionsName:   conditionsName,
 		AvailabilityName: schemaName + "Availability",
 		Inferred:         inferred,
-		hasStrings:       len(inferred.Branches) > 0,
+		hasStrings:       true,
+		hasStrconv:       true,
 	}
 }
 
@@ -46,6 +49,12 @@ func (g *Generator) WithFields(fields []schema.FieldDef) *Generator {
 	return g
 }
 
+// WithSchema sets the full schema (for accessing BranchExpressions and other metadata).
+func (g *Generator) WithSchema(s *schema.Schema) *Generator {
+	g.allSchema = s
+	return g
+}
+
 // GenerateResult holds the generated Go source code.
 type GenerateResult struct {
 	Source string
@@ -57,6 +66,16 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 	branchGroups := make(map[string][]OneOfBranch)
 	for _, b := range g.Inferred.Branches {
 		branchGroups[b.GroupName] = append(branchGroups[b.GroupName], b)
+	}
+
+	// Detect if strconv is needed for any check operators
+	for _, rule := range g.allRules {
+		if rule.Check != nil {
+			switch rule.Check.Op {
+			case "max", "min", "range", "integer":
+				g.hasStrconv = true
+			}
+		}
 	}
 
 	// Compile rules and generate Check/Challenge functions
@@ -78,23 +97,29 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		}
 
 		rc := NewRuleCompiler(fieldTypes, condTypes, fields)
+		if g.allSchema != nil {
+			rc.WithSchema(g.allSchema)
+		}
 		ruleData := rc.CompileRules(g.allRules)
 
 		// Build oneOf groups for branch disabling logic
 		var oneOfGroups []OneOfGroup
 		for groupName, branches := range branchGroups {
-			var branchNames []string
+			isOneOf := false
 			for _, b := range branches {
-				branchNames = append(branchNames, b.Branch)
+				if b.IsOneOf {
+					isOneOf = true
+					break
+				}
 			}
 			oneOfGroups = append(oneOfGroups, OneOfGroup{
 				Name:     groupName,
-				Branches: branchNames,
+				Branches: branches,
+				IsOneOf:  isOneOf,
 			})
 		}
-		g.hasStrings = len(oneOfGroups) > 0
-
 		checkGen := NewCheckGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData, oneOfGroups)
+		checkGen.WithExprCompiler(NewExprCompiler(fieldTypes, condTypes))
 		helper, checkBody = checkGen.Generate()
 
 		challengeGen := NewChallengeGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData)
@@ -112,6 +137,7 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		Branches:         g.Inferred.Branches,
 		BranchGroups:     branchGroups,
 		HasStrings:       g.hasStrings,
+		HasStrconv:       g.hasStrconv,
 		Helper:           helper,
 		CheckBody:        checkBody,
 		ChallengeOutput:  challengeOutput,
@@ -141,6 +167,8 @@ type generationTemplateData struct {
 	BranchGroups map[string][]OneOfBranch
 	// HasStrings indicates whether the strings package should be imported.
 	HasStrings bool
+	// HasStrconv indicates whether the strconv package should be imported.
+	HasStrconv bool
 	// Pre-generated Go code sections (raw, not templated).
 	Helper          string
 	CheckBody       string
@@ -176,8 +204,9 @@ package {{ .PkgName }}
 
 import (
 	"regexp"
-{{- if .HasStrings }}
 	"strings"
+{{- if .HasStrconv }}
+	"strconv"
 {{- end }}
 )
 

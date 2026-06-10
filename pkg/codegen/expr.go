@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/umpire-tools/umpire-gen/internal/schema"
+	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
 // ExprCompiler compiles JsonExpr AST nodes to inline Go boolean expression strings.
@@ -81,10 +81,14 @@ func (c *ExprCompiler) compileExpr(e *schema.Expr) string {
 		return c.compileCondLt(e)
 	case "condIn":
 		return c.compileCondIn(e)
+	case "notIn":
+		return c.compileNotIn(e)
 	case "check":
 		return c.compileCheck(e)
 	case "email":
 		return c.compileCheckEmail(e)
+	case "minLength", "maxLength", "matches", "url", "integer", "max", "min", "range":
+		return c.compileCheck(e)
 	case "fieldInCond":
 		// fieldInCond checks if a field value is in an array condition
 		condName := GoFieldName(e.Condition)
@@ -177,7 +181,11 @@ func (c *ExprCompiler) compilePresent(e *schema.Expr) string {
 	if goType == GoString {
 		return fmt.Sprintf("f.%s != \"\"", fieldName)
 	}
-	// Non-pointer fields are always "present" in Go; return true.
+	// For slice/map fields, present means non-empty
+	if goType == GoStringSlice || goType == GoFloat64Slice || goType == GoMap {
+		return fmt.Sprintf("len(f.%s) > 0", fieldName)
+	}
+	// Non-pointer bool/int/float are always "present" in Go; return true.
 	return "true"
 }
 
@@ -188,7 +196,15 @@ func (c *ExprCompiler) compileAbsent(e *schema.Expr) string {
 	if goType.Nullable() {
 		return fmt.Sprintf("f.%s == nil", fieldName)
 	}
-	// Non-pointer fields can never be absent; return false.
+	// For string fields, absent means empty
+	if goType == GoString {
+		return fmt.Sprintf("f.%s == \"\"", fieldName)
+	}
+	// For slice/map fields, absent means empty
+	if goType == GoStringSlice || goType == GoFloat64Slice || goType == GoMap {
+		return fmt.Sprintf("len(f.%s) == 0", fieldName)
+	}
+	// Non-pointer bool/int/float can never be absent; return false.
 	return "false"
 }
 
@@ -280,15 +296,95 @@ func (c *ExprCompiler) compileCondLt(e *schema.Expr) string {
 	return fmt.Sprintf("c.%s < %s", condName, val)
 }
 
-// compileCondIn emits a condition "in" check.
+// compileCondIn emits a condition "in" check (membership in a set of values).
 func (c *ExprCompiler) compileCondIn(e *schema.Expr) string {
 	condName := GoFieldName(e.Condition)
-	val := formatValue(e.Value)
 	goType := c.condTypes[e.Condition]
-	if goType.Nullable() {
-		return fmt.Sprintf("c.%s != nil && contains(c.%s, %s)", condName, condName, val)
+
+	// Extract values to check against
+	var vals []any
+	if v, ok := e.Value.([]any); ok {
+		vals = v
+	} else if e.Value != nil {
+		vals = []any{e.Value}
 	}
-	return fmt.Sprintf("contains(c.%s, %s)", condName, val)
+
+	// For slice conditions (string[], number[]) use contains()
+	if goType == GoStringSlice || goType == GoFloat64Slice {
+		var parts []string
+		for _, v := range vals {
+			parts = append(parts, fmt.Sprintf("contains(c.%s, %s)", condName, formatValue(v)))
+		}
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		return "(" + strings.Join(parts, " || ") + ")"
+	}
+
+	// For scalar conditions (string, number, bool) use equality with ||
+	var parts []string
+	for _, v := range vals {
+		val := formatValue(v)
+		if goType.Nullable() {
+			parts = append(parts, fmt.Sprintf("*c.%s == %s", condName, val))
+		} else {
+			parts = append(parts, fmt.Sprintf("c.%s == %s", condName, val))
+		}
+	}
+	if len(parts) == 1 {
+		if goType.Nullable() {
+			return fmt.Sprintf("c.%s != nil && %s", condName, parts[0])
+		}
+		return parts[0]
+	}
+	if goType.Nullable() {
+		return fmt.Sprintf("c.%s != nil && (%s)", condName, strings.Join(parts, " || "))
+	}
+	return "(" + strings.Join(parts, " || ") + ")"
+}
+
+// compileNotIn emits a field/condition "not in" check: value is NOT in a slice.
+func (c *ExprCompiler) compileNotIn(e *schema.Expr) string {
+	if e.Condition != "" {
+		condName := GoFieldName(e.Condition)
+		goType := c.condTypes[e.Condition]
+		if vals, ok := e.Value.([]any); ok && len(vals) > 0 {
+			var parts []string
+			for _, v := range vals {
+				val := formatValue(v)
+				if goType.Nullable() {
+					parts = append(parts, fmt.Sprintf("*c.%s != %s", condName, val))
+				} else {
+					parts = append(parts, fmt.Sprintf("c.%s != %s", condName, val))
+				}
+			}
+			return "(" + strings.Join(parts, " && ") + ")"
+		}
+		val := formatValue(e.Value)
+		if goType.Nullable() {
+			return fmt.Sprintf("c.%s != nil && *c.%s != %s", condName, condName, val)
+		}
+		return fmt.Sprintf("c.%s != %s", condName, val)
+	}
+	fieldName := c.GoFieldNameSafe(e.Field)
+	goType := c.fieldTypes[e.Field]
+	if vals, ok := e.Value.([]any); ok && len(vals) > 0 {
+		var parts []string
+		for _, v := range vals {
+			val := formatValue(v)
+			if goType.Nullable() {
+				parts = append(parts, fmt.Sprintf("*f.%s != %s", fieldName, val))
+			} else {
+				parts = append(parts, fmt.Sprintf("f.%s != %s", fieldName, val))
+			}
+		}
+		return "(" + strings.Join(parts, " && ") + ")"
+	}
+	val := formatValue(e.Value)
+	if goType.Nullable() {
+		return fmt.Sprintf("f.%s != nil && *f.%s != %s", fieldName, fieldName, val)
+	}
+	return fmt.Sprintf("f.%s != %s", fieldName, val)
 }
 
 // compileFieldOp emits a field comparison: f.Field <op> value (with nil guard for pointers).
@@ -297,12 +393,28 @@ func (c *ExprCompiler) compileFieldOp(e *schema.Expr, op string) string {
 	goType := c.fieldTypes[e.Field]
 
 	if op == "in" {
-		// For "in" operator, check if field value is contained in a slice
-		val := formatValue(e.Value)
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s != nil && contains(f.%s, *f.%s)", fieldName, fieldName, fieldName)
+		// For "in" operator: check if field value equals one of the allowed values
+		if vals, ok := e.Value.([]any); ok && len(vals) > 0 {
+			var parts []string
+			for _, v := range vals {
+				val := formatValue(v)
+				if goType.Nullable() {
+					parts = append(parts, fmt.Sprintf("f.%s != nil && *f.%s == %s", fieldName, fieldName, val))
+				} else {
+					parts = append(parts, fmt.Sprintf("f.%s == %s", fieldName, val))
+				}
+			}
+			return "(" + strings.Join(parts, " || ") + ")"
 		}
-		return fmt.Sprintf("contains(f.%s, %s)", fieldName, val)
+		val := formatValue(e.Value)
+		// For slice fields with a single value, check membership in the slice.
+		if goType == GoStringSlice || goType == GoFloat64Slice {
+			return fmt.Sprintf("contains(f.%s, %s)", fieldName, val)
+		}
+		if goType.Nullable() {
+			return fmt.Sprintf("f.%s != nil && *f.%s == %s", fieldName, fieldName, val)
+		}
+		return fmt.Sprintf("f.%s == %s", fieldName, val)
 	}
 
 	if goType.Nullable() {
@@ -345,82 +457,141 @@ func formatValue(v any) string {
 	}
 }
 
-// compileCheck compiles a check expression into a Go boolean expression.
-// The check expression has a "check" sub-expression with an op like "email", "minLength", "matches", etc.
-func (c *ExprCompiler) compileCheck(e *schema.Expr) string {
-	if len(e.Exprs) == 0 {
-		return "/* missing check expression */"
-	}
-	checkExpr := &e.Exprs[0]
-	checkOp := checkExpr.Op
+// isNumericType reports whether the Go type is a numeric type.
+func isNumericType(t GoType) bool {
+	return t == GoFloat64 || t == GoInt || t == GoFloat64Ptr || t == GoIntPtr
+}
 
+// extractRangeMin extracts the minimum value from a range string like "[1, 10]".
+func extractRangeMin(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimPrefix(s, "(")
+	parts := strings.Split(s, ",")
+	if len(parts) < 1 {
+		return "0"
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+// extractRangeMax extracts the maximum value from a range string like "[1, 10]".
+func extractRangeMax(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "]")
+	s = strings.TrimSuffix(s, ")")
+	parts := strings.Split(s, ",")
+	if len(parts) < 2 {
+		return "0"
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+// compileCheck compiles a check expression into a Go boolean expression.
+// The check expression has Op="check" and the actual validation op is in Exprs[0].
+func (c *ExprCompiler) compileCheck(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
 
+	checkOp := e.Op
+	val := formatValue(e.Value)
+
+	// Check for nested check op in Exprs[0] (from fixture conversion)
+	if len(e.Exprs) > 0 {
+		checkOp = e.Exprs[0].Op
+		val = formatValue(e.Exprs[0].Value)
+	}
+
+	// For numeric types, use direct comparison
+	if isNumericType(goType.Base()) {
+		fieldRef := fmt.Sprintf("f.%s", fieldName)
+		if goType.Nullable() {
+			fieldRef = fmt.Sprintf("*f.%s", fieldName)
+		}
+		switch checkOp {
+		case "min":
+			return fmt.Sprintf("f.%s != nil && %s >= %s", fieldName, fieldRef, val)
+		case "max":
+			return fmt.Sprintf("f.%s != nil && %s <= %s", fieldName, fieldRef, val)
+		case "range":
+			// Extract min/max from the range value
+			var minVal, maxVal string
+			if m, ok := e.Value.(map[string]float64); ok {
+				minVal = fmt.Sprintf("%g", m["min"])
+				maxVal = fmt.Sprintf("%g", m["max"])
+			} else {
+				// Fallback: try to parse as a string
+				rawVal := strings.TrimPrefix(val, "\"")
+				rawVal = strings.TrimSuffix(rawVal, "\"")
+				minVal = extractRangeMin(rawVal)
+				maxVal = extractRangeMax(rawVal)
+			}
+			return fmt.Sprintf("f.%s != nil && %s >= %s && %s <= %s", fieldName, fieldRef, minVal, fieldRef, maxVal)
+		case "integer":
+			return fmt.Sprintf("f.%s != nil && %s == float64(int64(%s))", fieldName, fieldRef, fieldRef)
+		default:
+			return "true"
+		}
+	}
+
+	// For slice types
+	if goType == GoStringSlice || goType == GoFloat64Slice {
+		switch checkOp {
+		case "minLength":
+			return fmt.Sprintf("len(f.%s) >= %s", fieldName, val)
+		case "maxLength":
+			return fmt.Sprintf("len(f.%s) <= %s", fieldName, val)
+		default:
+			return "true"
+		}
+	}
+
+	// For string types (pointer and non-pointer)
+	if goType.Nullable() {
+		switch checkOp {
+		case "email":
+			return fmt.Sprintf("f.%s != nil && isValidEmail(*f.%s)", fieldName, fieldName)
+		case "url":
+			return fmt.Sprintf("f.%s != nil && isValidURL(*f.%s)", fieldName, fieldName)
+		case "minLength":
+			return fmt.Sprintf("f.%s != nil && len(*f.%s) >= %s", fieldName, fieldName, val)
+		case "maxLength":
+			return fmt.Sprintf("f.%s != nil && len(*f.%s) <= %s", fieldName, fieldName, val)
+		case "matches":
+			return fmt.Sprintf("f.%s != nil && isValidRegexMatch(*f.%s, %s)", fieldName, fieldName, val)
+		case "integer":
+			return fmt.Sprintf("f.%s != nil && isValidInteger(*f.%s)", fieldName, fieldName)
+		case "max":
+			return fmt.Sprintf("f.%s != nil && isValidNumber(*f.%s) && parseFloat(*f.%s) <= %s", fieldName, fieldName, fieldName, val)
+		case "min":
+			return fmt.Sprintf("f.%s != nil && isValidNumber(*f.%s) && parseFloat(*f.%s) >= %s", fieldName, fieldName, fieldName, val)
+		case "range":
+			return fmt.Sprintf("f.%s != nil && isValidNumber(*f.%s) && isInRange(*f.%s, %s)", fieldName, fieldName, fieldName, val)
+		default:
+			return "true"
+		}
+	}
+
 	switch checkOp {
 	case "email":
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s == \"\" || isValidEmail(*f.%s)", fieldName, fieldName, fieldName)
-		}
-		return fmt.Sprintf("f.%s == \"\" || isValidEmail(f.%s)", fieldName, fieldName)
-
+		return fmt.Sprintf("isValidEmail(f.%s)", fieldName)
+	case "url":
+		return fmt.Sprintf("isValidURL(f.%s)", fieldName)
 	case "minLength":
-		minVal, _ := checkExpr.Value.(float64)
-		if minVal == 0 {
-			minVal = 1
-		}
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s == \"\" || len(*f.%s) >= %g", fieldName, fieldName, fieldName, minVal)
-		}
-		return fmt.Sprintf("f.%s == \"\" || len(f.%s) >= %g", fieldName, fieldName, minVal)
-
+		return fmt.Sprintf("len(f.%s) >= %s", fieldName, val)
 	case "maxLength":
-		maxVal, _ := checkExpr.Value.(float64)
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s == \"\" || len(*f.%s) <= %g", fieldName, fieldName, fieldName, maxVal)
-		}
-		return fmt.Sprintf("f.%s == \"\" || len(f.%s) <= %g", fieldName, fieldName, maxVal)
-
+		return fmt.Sprintf("len(f.%s) <= %s", fieldName, val)
 	case "matches":
-		pattern, _ := checkExpr.Value.(string)
-		if pattern == "" {
-			return "/* missing pattern */"
-		}
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s == \"\" || isValidRegexPattern(%q, *f.%s)", fieldName, fieldName, pattern, fieldName)
-		}
-		return fmt.Sprintf("f.%s == \"\" || isValidRegexPattern(%q, f.%s)", fieldName, pattern, fieldName)
-
-	case "gt":
-		val := formatValue(checkExpr.Value)
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s > %s", fieldName, fieldName, val)
-		}
-		return fmt.Sprintf("f.%s > %s", fieldName, val)
-
-	case "gte":
-		val := formatValue(checkExpr.Value)
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s >= %s", fieldName, fieldName, val)
-		}
-		return fmt.Sprintf("f.%s >= %s", fieldName, val)
-
-	case "lt":
-		val := formatValue(checkExpr.Value)
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s < %s", fieldName, fieldName, val)
-		}
-		return fmt.Sprintf("f.%s < %s", fieldName, val)
-
-	case "lte":
-		val := formatValue(checkExpr.Value)
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s == nil || *f.%s <= %s", fieldName, fieldName, val)
-		}
-		return fmt.Sprintf("f.%s <= %s", fieldName, val)
-
+		return fmt.Sprintf("isValidRegexMatch(f.%s, %s)", fieldName, val)
+	case "integer":
+		return fmt.Sprintf("isValidInteger(f.%s)", fieldName)
+	case "max":
+		return fmt.Sprintf("isValidNumber(f.%s) && parseFloat(f.%s) <= %s", fieldName, fieldName, val)
+	case "min":
+		return fmt.Sprintf("isValidNumber(f.%s) && parseFloat(f.%s) >= %s", fieldName, fieldName, val)
+	case "range":
+		return fmt.Sprintf("isValidNumber(f.%s) && isInRange(f.%s, %s)", fieldName, fieldName, val)
 	default:
-		return fmt.Sprintf("/* unknown check: %s */", checkOp)
+		return "true"
 	}
 }
 
