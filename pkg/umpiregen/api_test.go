@@ -2,10 +2,10 @@ package umpiregen
 
 import (
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/umpire-tools/umpire-gen/pkg/internal/testutil"
 )
 
 func TestGenerateSampleSchema(t *testing.T) {
@@ -73,7 +73,7 @@ func TestGenerateAcceptsSpecShapeAndCompiles(t *testing.T) {
 			t.Fatalf("generated source missing %q:\n%s", want, source)
 		}
 	}
-	assertGeneratedPackageCompiles(t, "availability", source)
+	testutil.AssertGeneratedPackageCompiles(t, source)
 }
 
 func TestGenerateNoRulesCompiles(t *testing.T) {
@@ -89,7 +89,7 @@ func TestGenerateNoRulesCompiles(t *testing.T) {
 	if !strings.Contains(source, "func Check(f MinimalFields") {
 		t.Fatalf("generated source missing Check:\n%s", source)
 	}
-	assertGeneratedPackageCompiles(t, "availability", source)
+	testutil.AssertGeneratedPackageCompiles(t, source)
 }
 
 func TestGenerateTruthyAndNumericChecksCompile(t *testing.T) {
@@ -112,30 +112,7 @@ func TestGenerateTruthyAndNumericChecksCompile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Generate() error: %v", err)
 			}
-			assertGeneratedPackageCompiles(t, "availability", source)
+			testutil.AssertGeneratedPackageCompiles(t, source)
 		})
-	}
-}
-
-func assertGeneratedPackageCompiles(t *testing.T, pkgName, source string) {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module smoke\n\ngo 1.23\n"), 0644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "generated.go"), []byte(source), 0644); err != nil {
-		t.Fatalf("write generated.go: %v", err)
-	}
-	cmd := exec.Command("go", "test", "./...")
-	cmd.Dir = dir
-	cacheDir := filepath.Join(dir, ".gocache")
-	modCacheDir := filepath.Join(dir, ".gomodcache")
-	cmd.Env = append(os.Environ(),
-		"GOCACHE="+cacheDir,
-		"GOMODCACHE="+modCacheDir,
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("generated package %s did not compile: %v\n%s\n--- source ---\n%s", pkgName, err, out, source)
 	}
 }

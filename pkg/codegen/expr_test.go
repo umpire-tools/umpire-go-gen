@@ -259,6 +259,7 @@ func TestCompile_CondTruthyOperator(t *testing.T) {
 		"count":   GoInt,
 		"tags":    GoStringSlice,
 		"weights": GoFloat64Slice,
+		"maybe":   GoStringPtr,
 	})
 
 	tests := []struct {
@@ -272,6 +273,7 @@ func TestCompile_CondTruthyOperator(t *testing.T) {
 		{"int", "count", "c.Count != 0"},
 		{"string slice", "tags", "len(c.Tags) > 0"},
 		{"number slice", "weights", "len(c.Weights) > 0"},
+		{"nullable", "maybe", "c.Maybe != nil"},
 	}
 
 	for _, tt := range tests {
@@ -289,8 +291,9 @@ func TestCompile_CondTruthyOperator(t *testing.T) {
 
 func TestCompile_TruthyFalsyNullableTypes(t *testing.T) {
 	comp := NewExprCompiler(map[string]GoType{
-		"name":  GoStringPtr,
-		"score": GoFloat64Ptr,
+		"name":    GoStringPtr,
+		"score":   GoFloat64Ptr,
+		"enabled": GoBoolPtr,
 	}, map[string]GoType{})
 
 	tests := []struct {
@@ -302,6 +305,8 @@ func TestCompile_TruthyFalsyNullableTypes(t *testing.T) {
 		{"falsy string pointer", &schema.Expr{Op: "falsy", Field: "name"}, `f.Name == nil || *f.Name == ""`},
 		{"truthy float pointer", &schema.Expr{Op: "truthy", Field: "score"}, "f.Score != nil"},
 		{"falsy float pointer", &schema.Expr{Op: "falsy", Field: "score"}, "f.Score == nil"},
+		{"truthy bool pointer", &schema.Expr{Op: "truthy", Field: "enabled"}, "f.Enabled != nil && *f.Enabled"},
+		{"falsy bool pointer", &schema.Expr{Op: "falsy", Field: "enabled"}, "f.Enabled == nil || *f.Enabled == false"},
 	}
 
 	for _, tt := range tests {
@@ -314,6 +319,25 @@ func TestCompile_TruthyFalsyNullableTypes(t *testing.T) {
 				t.Errorf("Compile() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCompile_CheckRangeFromMapValue(t *testing.T) {
+	comp := NewExprCompiler(map[string]GoType{
+		"age": GoFloat64,
+	}, map[string]GoType{})
+
+	got, err := comp.Compile(&schema.Expr{
+		Op:    "range",
+		Field: "age",
+		Value: map[string]any{"min": float64(18), "max": float64(65)},
+	})
+	if err != nil {
+		t.Fatalf("Compile() error: %v", err)
+	}
+	want := "f.Age >= 18 && f.Age <= 65"
+	if got != want {
+		t.Errorf("Compile() = %q, want %q", got, want)
 	}
 }
 
