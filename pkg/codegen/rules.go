@@ -13,7 +13,7 @@ type RuleContribution struct {
 	Expr     string // compiled Go boolean expression (empty for requires)
 	Reason   string // reason string (may be empty)
 	// For eitherOf branches: per-branch compiled expressions and reasons
-	BranchExprs []string
+	BranchExprs   []string
 	BranchReasons []string
 	// For eitherOf branches: per-branch sub-conditions and their reasons
 	// Used to find the first failing sub-condition in the first failing branch
@@ -38,25 +38,25 @@ func joinAnd(a, b string) string {
 
 // FieldRuleData holds all rule contributions for a single field, plus metadata.
 type FieldRuleData struct {
-	GoName       string
-	Required     bool // from FieldDef.Required
-	IsEmpty      bool // from FieldDef.IsEmpty
-	Enabled      RuleContribution
-	Disabled     RuleContribution
-	Requires     []RuleContribution
-	Fair         RuleContribution
-	Check        RuleContribution
-	IsEitherOf   bool // true if this field's enabledWhen comes from an eitherOf
-	IsFairOf     bool // true if this field's eitherOf branches are fairWhen (not enabledWhen)
+	GoName     string
+	Required   bool // from FieldDef.Required
+	IsEmpty    bool // from FieldDef.IsEmpty
+	Enabled    RuleContribution
+	Disabled   RuleContribution
+	Requires   []RuleContribution
+	Fair       RuleContribution
+	Check      RuleContribution
+	IsEitherOf bool // true if this field's enabledWhen comes from an eitherOf
+	IsFairOf   bool // true if this field's eitherOf branches are fairWhen (not enabledWhen)
 }
 
 // RuleCompiler compiles all schema rules into per-field contribution data.
 type RuleCompiler struct {
-	fieldTypes  map[string]GoType
-	condTypes   map[string]GoType
-	fieldMap    map[string]*schema.FieldDef
-	result      map[string]*FieldRuleData
-	schema      *schema.Schema // for accessing BranchExpressions
+	fieldTypes map[string]GoType
+	condTypes  map[string]GoType
+	fieldMap   map[string]*schema.FieldDef
+	result     map[string]*FieldRuleData
+	schema     *schema.Schema // for accessing BranchExpressions
 }
 
 // NewRuleCompiler creates a RuleCompiler.
@@ -187,7 +187,11 @@ func (rc *RuleCompiler) CompileRules(rules []schema.Rule) map[string]*FieldRuleD
 			}
 		case "check":
 			if rule.Check != nil {
-				compiled, err := comp.Compile(rule.Check)
+				checkExpr := *rule.Check
+				if checkExpr.Field == "" {
+					checkExpr.Field = targetField
+				}
+				compiled, err := comp.Compile(&checkExpr)
 				if err == nil {
 					fd.Check = RuleContribution{
 						RuleType: "check",

@@ -10,6 +10,7 @@ type Config struct {
 	InputPath      string // -i: input .umpire.json path (required)
 	OutputDir      string // -o: output directory (default: ".")
 	PkgName        string // -pkg: Go package name (required)
+	SchemaName     string // derived schema name used for generated type prefixes
 	FieldsName     string // -fields: override for Fields struct name
 	ConditionsName string // -conditions: override for Conditions struct name
 }
@@ -50,6 +51,7 @@ func ParseFlags(args []string) (*Config, error) {
 		InputPath:      *inputPath,
 		OutputDir:      *outputDir,
 		PkgName:        *pkgName,
+		SchemaName:     baseName(*inputPath),
 		FieldsName:     *fieldsName,
 		ConditionsName: *conditionsName,
 	}, nil
