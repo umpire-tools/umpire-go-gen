@@ -12,8 +12,12 @@ import (
 // shape and the older internal array shape used by early generator tests.
 func Parse(data []byte) (*Schema, error) {
 	var internal Schema
-	if err := json.Unmarshal(data, &internal); err == nil && len(internal.Fields) > 0 {
-		return &internal, nil
+	if err := json.Unmarshal(data, &internal); err == nil {
+		if len(internal.Fields) > 0 {
+			return &internal, nil
+		}
+	} else if looksLikeInternalSchema(data) {
+		return nil, err
 	}
 
 	var spec specSchema
@@ -24,6 +28,20 @@ func Parse(data []byte) (*Schema, error) {
 		return nil, fmt.Errorf("schema must have at least one field definition")
 	}
 	return convertSpecSchema(&spec, captureRuleBranchesOrder(data)), nil
+}
+
+func looksLikeInternalSchema(data []byte) bool {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false
+	}
+	for _, key := range []string{"fields", "conditions"} {
+		value := bytes.TrimSpace(raw[key])
+		if len(value) > 0 && value[0] == '[' {
+			return true
+		}
+	}
+	return false
 }
 
 type specSchema struct {

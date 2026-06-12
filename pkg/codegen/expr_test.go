@@ -18,9 +18,9 @@ func TestCompile_EqOperator(t *testing.T) {
 	)
 
 	tests := []struct {
-		name   string
-		expr   *schema.Expr
-		want   string
+		name string
+		expr *schema.Expr
+		want string
 	}{
 		{
 			name: "pointer string field",
@@ -251,6 +251,72 @@ func TestCompile_ConditionOperators(t *testing.T) {
 	}
 }
 
+func TestCompile_CondTruthyOperator(t *testing.T) {
+	comp := NewExprCompiler(map[string]GoType{}, map[string]GoType{
+		"enabled": GoBool,
+		"role":    GoString,
+		"score":   GoFloat64,
+		"count":   GoInt,
+		"tags":    GoStringSlice,
+		"weights": GoFloat64Slice,
+	})
+
+	tests := []struct {
+		name string
+		cond string
+		want string
+	}{
+		{"bool", "enabled", "c.Enabled"},
+		{"string", "role", `c.Role != ""`},
+		{"float", "score", "c.Score != 0"},
+		{"int", "count", "c.Count != 0"},
+		{"string slice", "tags", "len(c.Tags) > 0"},
+		{"number slice", "weights", "len(c.Weights) > 0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := comp.Compile(&schema.Expr{Op: "cond", Condition: tt.cond})
+			if err != nil {
+				t.Fatalf("Compile() error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Compile() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompile_TruthyFalsyNullableTypes(t *testing.T) {
+	comp := NewExprCompiler(map[string]GoType{
+		"name":  GoStringPtr,
+		"score": GoFloat64Ptr,
+	}, map[string]GoType{})
+
+	tests := []struct {
+		name string
+		expr *schema.Expr
+		want string
+	}{
+		{"truthy string pointer", &schema.Expr{Op: "truthy", Field: "name"}, `f.Name != nil && *f.Name != ""`},
+		{"falsy string pointer", &schema.Expr{Op: "falsy", Field: "name"}, `f.Name == nil || *f.Name == ""`},
+		{"truthy float pointer", &schema.Expr{Op: "truthy", Field: "score"}, "f.Score != nil"},
+		{"falsy float pointer", &schema.Expr{Op: "falsy", Field: "score"}, "f.Score == nil"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := comp.Compile(tt.expr)
+			if err != nil {
+				t.Fatalf("Compile() error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("Compile() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCompile_ConditionAsFieldOp(t *testing.T) {
 	comp := NewExprCompiler(map[string]GoType{}, map[string]GoType{})
 
@@ -405,11 +471,11 @@ func TestCompile_NestedCombinators(t *testing.T) {
 		Op: "or",
 		Exprs: []schema.Expr{
 			{
-				Op:   "and",
+				Op:    "and",
 				Exprs: []schema.Expr{{Op: "eq", Field: "a", Value: "x"}, {Op: "eq", Field: "b", Value: "y"}},
 			},
 			{
-				Op:   "and",
+				Op:    "and",
 				Exprs: []schema.Expr{{Op: "eq", Field: "c", Value: "z"}, {Op: "eq", Field: "d", Value: "w"}},
 			},
 		},

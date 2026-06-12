@@ -2,6 +2,7 @@ package codegen
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -121,5 +122,30 @@ func TestGenerateWritesToFile(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "type TestFields struct") {
 		t.Error("file missing TestFields struct")
+	}
+	if !strings.Contains(string(data), "func Check(f TestFields") {
+		t.Error("file missing Check function")
+	}
+	assertCodegenPackageCompiles(t, result.Source)
+}
+
+func assertCodegenPackageCompiles(t *testing.T, source string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module codegensmoke\n\ngo 1.23\n"), 0644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "generated.go"), []byte(source), 0644); err != nil {
+		t.Fatalf("write generated.go: %v", err)
+	}
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GOCACHE="+filepath.Join(dir, ".gocache"),
+		"GOMODCACHE="+filepath.Join(dir, ".gomodcache"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated package did not compile: %v\n%s\n--- source ---\n%s", err, out, source)
 	}
 }
