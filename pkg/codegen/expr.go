@@ -213,7 +213,14 @@ func (c *ExprCompiler) compileTruthy(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
 	if goType.Nullable() {
-		return fmt.Sprintf("f.%s != nil && *f.%s", fieldName, fieldName)
+		switch goType.Base() {
+		case GoBool:
+			return fmt.Sprintf("f.%s != nil && *f.%s", fieldName, fieldName)
+		case GoString:
+			return fmt.Sprintf("f.%s != nil && *f.%s != \"\"", fieldName, fieldName)
+		default:
+			return fmt.Sprintf("f.%s != nil", fieldName)
+		}
 	}
 	switch goType {
 	case GoBool:
@@ -230,7 +237,14 @@ func (c *ExprCompiler) compileFalsy(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
 	if goType.Nullable() {
-		return fmt.Sprintf("f.%s == nil || *f.%s == false", fieldName, fieldName)
+		switch goType.Base() {
+		case GoBool:
+			return fmt.Sprintf("f.%s == nil || *f.%s == false", fieldName, fieldName)
+		case GoString:
+			return fmt.Sprintf("f.%s == nil || *f.%s == \"\"", fieldName, fieldName)
+		default:
+			return fmt.Sprintf("f.%s == nil", fieldName)
+		}
 	}
 	switch goType {
 	case GoBool:
@@ -246,10 +260,20 @@ func (c *ExprCompiler) compileFalsy(e *schema.Expr) string {
 func (c *ExprCompiler) compileCond(e *schema.Expr) string {
 	condName := GoFieldName(e.Condition)
 	goType := c.condTypes[e.Condition]
-	if goType == GoBool {
+	switch goType {
+	case GoBool:
 		return fmt.Sprintf("c.%s", condName)
+	case GoString:
+		return fmt.Sprintf("c.%s != \"\"", condName)
+	case GoFloat64, GoInt:
+		return fmt.Sprintf("c.%s != 0", condName)
+	case GoStringSlice, GoFloat64Slice:
+		return fmt.Sprintf("len(c.%s) > 0", condName)
 	}
-	return fmt.Sprintf("c.%s != nil", condName)
+	if goType.Nullable() {
+		return fmt.Sprintf("c.%s != nil", condName)
+	}
+	return "true"
 }
 
 // compileCondEq emits a condition equality comparison: c.Field == value.
@@ -499,6 +523,10 @@ func (c *ExprCompiler) compileCheck(e *schema.Expr) string {
 	if len(e.Exprs) > 0 {
 		checkOp = e.Exprs[0].Op
 		val = formatValue(e.Exprs[0].Value)
+		if fieldName == "" {
+			fieldName = c.GoFieldNameSafe(e.Exprs[0].Field)
+			goType = c.fieldTypes[e.Exprs[0].Field]
+		}
 	}
 
 	// For numeric types, use direct comparison
@@ -509,13 +537,22 @@ func (c *ExprCompiler) compileCheck(e *schema.Expr) string {
 		}
 		switch checkOp {
 		case "min":
-			return fmt.Sprintf("f.%s != nil && %s >= %s", fieldName, fieldRef, val)
+			if goType.Nullable() {
+				return fmt.Sprintf("f.%s != nil && %s >= %s", fieldName, fieldRef, val)
+			}
+			return fmt.Sprintf("%s >= %s", fieldRef, val)
 		case "max":
-			return fmt.Sprintf("f.%s != nil && %s <= %s", fieldName, fieldRef, val)
+			if goType.Nullable() {
+				return fmt.Sprintf("f.%s != nil && %s <= %s", fieldName, fieldRef, val)
+			}
+			return fmt.Sprintf("%s <= %s", fieldRef, val)
 		case "range":
 			// Extract min/max from the range value
 			var minVal, maxVal string
-			if m, ok := e.Value.(map[string]float64); ok {
+			if m, ok := e.Value.(map[string]any); ok {
+				minVal = formatValue(m["min"])
+				maxVal = formatValue(m["max"])
+			} else if m, ok := e.Value.(map[string]float64); ok {
 				minVal = fmt.Sprintf("%g", m["min"])
 				maxVal = fmt.Sprintf("%g", m["max"])
 			} else {
@@ -525,9 +562,15 @@ func (c *ExprCompiler) compileCheck(e *schema.Expr) string {
 				minVal = extractRangeMin(rawVal)
 				maxVal = extractRangeMax(rawVal)
 			}
-			return fmt.Sprintf("f.%s != nil && %s >= %s && %s <= %s", fieldName, fieldRef, minVal, fieldRef, maxVal)
+			if goType.Nullable() {
+				return fmt.Sprintf("f.%s != nil && %s >= %s && %s <= %s", fieldName, fieldRef, minVal, fieldRef, maxVal)
+			}
+			return fmt.Sprintf("%s >= %s && %s <= %s", fieldRef, minVal, fieldRef, maxVal)
 		case "integer":
-			return fmt.Sprintf("f.%s != nil && %s == float64(int64(%s))", fieldName, fieldRef, fieldRef)
+			if goType.Nullable() {
+				return fmt.Sprintf("f.%s != nil && %s == float64(int64(%s))", fieldName, fieldRef, fieldRef)
+			}
+			return fmt.Sprintf("%s == float64(int64(%s))", fieldRef, fieldRef)
 		default:
 			return "true"
 		}

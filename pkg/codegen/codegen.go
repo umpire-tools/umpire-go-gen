@@ -78,53 +78,49 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		}
 	}
 
-	// Compile rules and generate Check/Challenge functions
-	var helper, checkBody, challengeOutput string
-	if len(g.allRules) > 0 {
-		fieldTypes := make(map[string]GoType)
-		for _, ft := range g.Inferred.Fields {
-			fieldTypes[ft.Name] = ft.GoType
-		}
-
-		condTypes := make(map[string]GoType)
-		for _, ct := range g.Inferred.Conditions {
-			condTypes[ct.Name] = ct.GoType
-		}
-
-		fields := g.allFields
-		if fields == nil {
-			fields = []schema.FieldDef{}
-		}
-
-		rc := NewRuleCompiler(fieldTypes, condTypes, fields)
-		if g.allSchema != nil {
-			rc.WithSchema(g.allSchema)
-		}
-		ruleData := rc.CompileRules(g.allRules)
-
-		// Build oneOf groups for branch disabling logic
-		var oneOfGroups []OneOfGroup
-		for groupName, branches := range branchGroups {
-			isOneOf := false
-			for _, b := range branches {
-				if b.IsOneOf {
-					isOneOf = true
-					break
-				}
-			}
-			oneOfGroups = append(oneOfGroups, OneOfGroup{
-				Name:     groupName,
-				Branches: branches,
-				IsOneOf:  isOneOf,
-			})
-		}
-		checkGen := NewCheckGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData, oneOfGroups)
-		checkGen.WithExprCompiler(NewExprCompiler(fieldTypes, condTypes))
-		helper, checkBody = checkGen.Generate()
-
-		challengeGen := NewChallengeGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData)
-		challengeOutput = challengeGen.Generate()
+	fieldTypes := make(map[string]GoType)
+	for _, ft := range g.Inferred.Fields {
+		fieldTypes[ft.Name] = ft.GoType
 	}
+
+	condTypes := make(map[string]GoType)
+	for _, ct := range g.Inferred.Conditions {
+		condTypes[ct.Name] = ct.GoType
+	}
+
+	fields := g.allFields
+	if fields == nil {
+		fields = []schema.FieldDef{}
+	}
+
+	rc := NewRuleCompiler(fieldTypes, condTypes, fields)
+	if g.allSchema != nil {
+		rc.WithSchema(g.allSchema)
+	}
+	ruleData := rc.CompileRules(g.allRules)
+
+	// Build oneOf groups for branch disabling logic
+	var oneOfGroups []OneOfGroup
+	for groupName, branches := range branchGroups {
+		isOneOf := false
+		for _, b := range branches {
+			if b.IsOneOf {
+				isOneOf = true
+				break
+			}
+		}
+		oneOfGroups = append(oneOfGroups, OneOfGroup{
+			Name:     groupName,
+			Branches: branches,
+			IsOneOf:  isOneOf,
+		})
+	}
+	checkGen := NewCheckGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData, oneOfGroups)
+	checkGen.WithExprCompiler(NewExprCompiler(fieldTypes, condTypes))
+	helper, checkBody := checkGen.Generate()
+
+	challengeGen := NewChallengeGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData)
+	challengeOutput := challengeGen.Generate()
 
 	data := generationTemplateData{
 		PkgName:          g.PkgName,

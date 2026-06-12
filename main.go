@@ -25,6 +25,7 @@ func main() {
 
 	source, err := umpiregen.Generate(schemaJSON, umpiregen.Config{
 		PkgName:        cfg.PkgName,
+		SchemaName:     cfg.SchemaName,
 		FieldsName:     cfg.FieldsName,
 		ConditionsName: cfg.ConditionsName,
 	})

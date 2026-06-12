@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,12 +23,12 @@ func LoadSchema(path string) (*schema.Schema, error) {
 		return nil, err
 	}
 
-	var s schema.Schema
-	if err := json.Unmarshal(data, &s); err != nil {
+	s, err := schema.Parse(data)
+	if err != nil {
 		return nil, err
 	}
 
-	return &s, nil
+	return s, nil
 }
 
 // readStdin reads all of stdin into a byte slice.

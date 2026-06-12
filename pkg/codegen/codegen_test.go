@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/umpire-tools/umpire-gen/pkg/internal/testutil"
 	"github.com/umpire-tools/umpire-gen/pkg/schema"
 )
 
@@ -77,7 +78,7 @@ func TestGenerateSampleSchema(t *testing.T) {
 	}
 }
 
-func TestGenerateWritesToFile(t *testing.T) {
+func TestGenerateNoRulesEmitsCompilingCheckAndChallenge(t *testing.T) {
 	s := &schema.Schema{
 		Fields: []schema.FieldDef{
 			{Name: "country", Required: true, IsEmpty: "string"},
@@ -99,7 +100,7 @@ func TestGenerateWritesToFile(t *testing.T) {
 		t.Fatalf("Generate() error: %v", err)
 	}
 
-	// Write to temp file and verify it parses
+	// Write to temp file and verify the no-rules generator path is complete.
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test_umpire.go")
 	if err := os.WriteFile(tmpFile, []byte(result.Source), 0644); err != nil {
@@ -122,4 +123,11 @@ func TestGenerateWritesToFile(t *testing.T) {
 	if !strings.Contains(string(data), "type TestFields struct") {
 		t.Error("file missing TestFields struct")
 	}
+	if !strings.Contains(string(data), "func Check(f TestFields") {
+		t.Error("file missing Check function")
+	}
+	if !strings.Contains(string(data), "func Challenge(fieldName string, f TestFields") {
+		t.Error("file missing Challenge function")
+	}
+	testutil.AssertGeneratedPackageCompiles(t, result.Source)
 }

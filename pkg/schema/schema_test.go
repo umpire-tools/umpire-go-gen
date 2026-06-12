@@ -2,6 +2,7 @@ package schema
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -238,5 +239,19 @@ func TestSchemaValidate(t *testing.T) {
 	withFields := Schema{Fields: []FieldDef{{Name: "test"}}}
 	if err := withFields.Validate(); err != nil {
 		t.Errorf("expected no error for schema with fields, got: %v", err)
+	}
+}
+
+func TestParseMalformedInternalShapeReturnsInternalError(t *testing.T) {
+	_, err := Parse([]byte(`{
+		"fields": [{"name": "email"}],
+		"conditions": {},
+		"rules": []
+	}`))
+	if err == nil {
+		t.Fatal("expected parse error")
+	}
+	if !strings.Contains(err.Error(), "cannot unmarshal object into Go struct field Schema.conditions") {
+		t.Fatalf("Parse() error = %q, want internal-shape unmarshal error", err)
 	}
 }
