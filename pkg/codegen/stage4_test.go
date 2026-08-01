@@ -139,7 +139,7 @@ func TestGeneratedCodeCompilesAndRuns(t *testing.T) {
 	}
 
 	// Write the generated Go source
-	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_umpire.go"), []byte(result.Source), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_gen.go"), []byte(result.Source), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestCheckWithSetFields(t *testing.T) {
 }
 
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_umpire_test.go"), []byte(testMain), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_gen_test.go"), []byte(testMain), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
@@ -286,7 +286,7 @@ func TestGeneratedCodeWithDisabledField(t *testing.T) {
 		t.Fatalf("MkdirAll() error: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_umpire.go"), []byte(result.Source), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_gen.go"), []byte(result.Source), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestDisabledWhenNotUS(t *testing.T) {
 }
 
 `
-	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_umpire_test.go"), []byte(testMain), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "test_gen_test.go"), []byte(testMain), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
 
