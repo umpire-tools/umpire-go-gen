@@ -1,4 +1,4 @@
-# umpire-gen
+# umpire-go-gen
 
 Generate typed, zero-dependency Go from `.umpire.json` schemas. The output is a self-contained Go package with structs, enums, and a `Check()` function — no reflection, no `any`, no runtime map lookups.
 
@@ -90,7 +90,7 @@ For a schema named `checkout.umpire.json`, the tool emits `checkout_gen.go` cont
 Place this in the consuming package (e.g. in `checkout.go`):
 
 ```go
-//go:generate go run github.com/umpire-tools/umpire-go-gen -i ../../schemas/checkout.umpire.json -output-file checkout_gen.go -pkg availability
+//go:generate go run github.com/umpire-tools/umpire-go-gen@v0.1.1 -i ../../schemas/checkout.umpire.json -output-file checkout_gen.go -pkg availability
 ```
 
 Then run `go generate ./...` to regenerate.
