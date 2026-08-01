@@ -50,7 +50,10 @@ func SchemaExists(path string) bool {
 }
 
 // DefaultOutputPath returns the default output path derived from the input path.
-// E.g. "checkout.umpire.json" -> "checkout_umpire.go"
+// E.g. "checkout.umpire.json" -> "checkout_gen.go"
+//
+// The _gen.go suffix follows the Go ecosystem convention for generated files,
+// signaling to tooling and reviewers that the file should not be hand-edited.
 func DefaultOutputPath(inputPath string) string {
 	base := filepath.Base(inputPath)
 	for _, suffix := range []string{".umpire.json", ".umpire", ".json"} {
@@ -59,5 +62,5 @@ func DefaultOutputPath(inputPath string) string {
 			break
 		}
 	}
-	return base + "_umpire.go"
+	return base + "_gen.go"
 }

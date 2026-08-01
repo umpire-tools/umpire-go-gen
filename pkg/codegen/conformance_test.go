@@ -967,7 +967,7 @@ func runCheck(t *testing.T, schemaName string, s *schema.Schema, source string, 
 	}
 
 	// Write the generated Go code
-	if err := os.WriteFile(filepath.Join(pkgDir, "gen_umpire.go"), []byte(source), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(pkgDir, "gen_gen.go"), []byte(source), 0644); err != nil {
 		return nil, fmt.Errorf("WriteFile: %w", err)
 	}
 

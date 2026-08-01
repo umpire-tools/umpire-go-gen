@@ -115,10 +115,10 @@ func TestDefaultOutputPath(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"full suffix", "checkout.umpire.json", "checkout_umpire.go"},
-		{"json suffix", "data.json", "data_umpire.go"},
-		{"umpire suffix", "config.umpire", "config_umpire.go"},
-		{"with path", "/path/to/schema.umpire.json", "schema_umpire.go"},
+		{"full suffix", "checkout.umpire.json", "checkout_gen.go"},
+		{"json suffix", "data.json", "data_gen.go"},
+		{"umpire suffix", "config.umpire", "config_gen.go"},
+		{"with path", "/path/to/schema.umpire.json", "schema_gen.go"},
 	}
 
 	for _, tt := range tests {

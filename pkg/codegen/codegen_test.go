@@ -102,7 +102,7 @@ func TestGenerateNoRulesEmitsCompilingCheckAndChallenge(t *testing.T) {
 
 	// Write to temp file and verify the no-rules generator path is complete.
 	tmpDir := t.TempDir()
-	tmpFile := filepath.Join(tmpDir, "test_umpire.go")
+	tmpFile := filepath.Join(tmpDir, "test_gen.go")
 	if err := os.WriteFile(tmpFile, []byte(result.Source), 0644); err != nil {
 		t.Fatalf("WriteFile() error: %v", err)
 	}
