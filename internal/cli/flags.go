@@ -9,6 +9,7 @@ import (
 type Config struct {
 	InputPath      string // -i: input .umpire.json path (required)
 	OutputDir      string // -o: output directory (default: ".")
+	OutputFile     string // -output-file: exact output file path (overrides -o + derived name)
 	PkgName        string // -pkg: Go package name (required)
 	SchemaName     string // derived schema name used for generated type prefixes
 	FieldsName     string // -fields: override for Fields struct name
@@ -22,6 +23,7 @@ func ParseFlags(args []string) (*Config, error) {
 
 	inputPath := fs.String("i", "", "input .umpire.json path")
 	outputDir := fs.String("o", ".", "output directory")
+	outputFile := fs.String("output-file", "", "exact output file path (overrides -o + derived name)")
 	pkgName := fs.String("pkg", "", "Go package name")
 	fieldsName := fs.String("fields", "", "override for Fields struct name")
 	conditionsName := fs.String("conditions", "", "override for Conditions struct name")
@@ -50,6 +52,7 @@ func ParseFlags(args []string) (*Config, error) {
 	return &Config{
 		InputPath:      *inputPath,
 		OutputDir:      *outputDir,
+		OutputFile:     *outputFile,
 		PkgName:        *pkgName,
 		SchemaName:     baseName(*inputPath),
 		FieldsName:     *fieldsName,

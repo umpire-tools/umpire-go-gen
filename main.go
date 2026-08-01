@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go/format"
 	"os"
 	"path/filepath"
 
@@ -34,19 +35,37 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Run generated source through gofmt for canonical formatting.
+	formatted, err := format.Source([]byte(source))
+	if err != nil {
+		// If gofmt fails, write the unformatted source so the user can
+		// inspect the syntax error rather than getting nothing.
+		fmt.Fprintf(os.Stderr, "warning: gofmt failed (%v); writing unformatted source\n", err)
+		formatted = []byte(source)
+	}
+
 	// Write generated code
 	if cfg.InputPath == "-" {
-		if _, err := os.Stdout.Write([]byte(source)); err != nil {
+		if _, err := os.Stdout.Write(formatted); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing stdout: %v\n", err)
 			os.Exit(1)
 		}
 	} else {
-		outFile := filepath.Join(cfg.OutputDir, cli.DefaultOutputPath(cfg.InputPath))
-		if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "error creating output directory: %v\n", err)
-			os.Exit(1)
+		var outFile string
+		if cfg.OutputFile != "" {
+			outFile = cfg.OutputFile
+			if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "error creating output directory: %v\n", err)
+				os.Exit(1)
+			}
+		} else {
+			outFile = filepath.Join(cfg.OutputDir, cli.DefaultOutputPath(cfg.InputPath))
+			if err := os.MkdirAll(cfg.OutputDir, 0755); err != nil {
+				fmt.Fprintf(os.Stderr, "error creating output directory: %v\n", err)
+				os.Exit(1)
+			}
 		}
-		if err := os.WriteFile(outFile, []byte(source), 0644); err != nil {
+		if err := os.WriteFile(outFile, formatted, 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "error writing file: %v\n", err)
 			os.Exit(1)
 		}

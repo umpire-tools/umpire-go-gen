@@ -79,6 +79,40 @@ func TestParseFlags_DefaultConditionsName(t *testing.T) {
 	}
 }
 
+func TestParseFlags_OutputFile(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-i", "schema.umpire.json", "-pkg", "myschema", "-output-file", "./gen/types_gen.go"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OutputFile != "./gen/types_gen.go" {
+		t.Errorf("OutputFile = %q, want %q", cfg.OutputFile, "./gen/types_gen.go")
+	}
+}
+
+func TestParseFlags_OutputFileOverridesOutputDir(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-i", "schema.umpire.json", "-o", "./out", "-pkg", "myschema", "-output-file", "custom.go"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OutputFile != "custom.go" {
+		t.Errorf("OutputFile = %q, want %q", cfg.OutputFile, "custom.go")
+	}
+	// OutputDir is still parsed but should be ignored when OutputFile is set.
+	if cfg.OutputDir != "./out" {
+		t.Errorf("OutputDir = %q, want %q", cfg.OutputDir, "./out")
+	}
+}
+
+func TestParseFlags_DefaultOutputFile(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-i", "schema.umpire.json", "-pkg", "myschema"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.OutputFile != "" {
+		t.Errorf("OutputFile = %q, want empty string (default)", cfg.OutputFile)
+	}
+}
+
 func TestParseFlags_MissingRequiredInput(t *testing.T) {
 	_, err := ParseFlags([]string{"-pkg", "myschema"})
 	if err == nil {
