@@ -3,7 +3,7 @@ package codegen
 import (
 	"strings"
 
-	"github.com/umpire-tools/umpire-gen/pkg/schema"
+	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
 )
 
 // RuleContribution holds the compiled contribution of a single rule to a FieldStatus.

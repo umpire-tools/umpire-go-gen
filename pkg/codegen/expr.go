@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/umpire-tools/umpire-gen/pkg/schema"
+	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
 )
 
 // ExprCompiler compiles JsonExpr AST nodes to inline Go boolean expression strings.

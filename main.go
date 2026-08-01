@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/umpire-tools/umpire-gen/internal/cli"
-	"github.com/umpire-tools/umpire-gen/pkg/umpiregen"
+	"github.com/umpire-tools/umpire-go-gen/internal/cli"
+	"github.com/umpire-tools/umpire-go-gen/pkg/umpiregen"
 )
 
 func main() {

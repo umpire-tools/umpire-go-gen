@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/umpire-tools/umpire-gen/pkg/schema"
+	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
 )
 
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)

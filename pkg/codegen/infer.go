@@ -4,7 +4,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/umpire-tools/umpire-gen/pkg/schema"
+	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
 )
 
 // FieldTypeInfo holds the inferred type info for a schema field.

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/umpire-tools/umpire-gen/internal/cli"
+	"github.com/umpire-tools/umpire-go-gen/internal/cli"
 )
 
 func TestFormatSource_ValidGo(t *testing.T) {

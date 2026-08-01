@@ -3,7 +3,7 @@ package codegen
 import (
 	"fmt"
 	"testing"
-	"github.com/umpire-tools/umpire-gen/pkg/schema"
+	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
 )
 
 func TestCheckCompile(t *testing.T) {

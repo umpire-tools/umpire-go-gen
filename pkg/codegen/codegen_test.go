@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/umpire-tools/umpire-gen/pkg/internal/testutil"
-	"github.com/umpire-tools/umpire-gen/pkg/schema"
+	"github.com/umpire-tools/umpire-go-gen/pkg/internal/testutil"
+	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
 )
 
 func TestGenerateSampleSchema(t *testing.T) {
