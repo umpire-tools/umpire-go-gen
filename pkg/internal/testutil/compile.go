@@ -14,7 +14,7 @@ func AssertGeneratedPackageCompiles(t *testing.T, source string) {
 	t.Helper()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module generatedsmoke\n\ngo 1.23\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module generatedsmoke\n\ngo 1.22\n"), 0644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "generated.go"), []byte(source), 0644); err != nil {
@@ -24,6 +24,7 @@ func AssertGeneratedPackageCompiles(t *testing.T, source string) {
 	cmd := exec.Command("go", "test", "./...")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
+		"GOTOOLCHAIN=local",
 		"GOCACHE="+filepath.Join(dir, ".gocache"),
 		"GOMODCACHE="+filepath.Join(dir, ".gomodcache"),
 	)
