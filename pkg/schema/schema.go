@@ -7,9 +7,10 @@ import (
 
 // Schema is the root structure of a .umpire.json file.
 type Schema struct {
-	Fields            []FieldDef     `json:"fields"`
-	Conditions        []ConditionDef `json:"conditions"`
-	Rules             []Rule         `json:"rules"`
+	Fields     []FieldDef              `json:"fields"`
+	Conditions []ConditionDef          `json:"conditions"`
+	Rules      []Rule                  `json:"rules"`
+	Validators map[string]ValidatorDef `json:"-"`
 	// BranchExpressions maps branch names (lowercase) to their activation expressions.
 	// For eitherOf rules, these are derived from the when clauses of rules in each branch.
 	BranchExpressions map[string]*Expr `json:"-"`
@@ -43,9 +44,19 @@ type FieldDef struct {
 	// IsEmpty holds the "empty" type indicator from the schema: "string", "number", "boolean", "array", "object".
 	// When set, this also implies the field's type and that empty values are unsatisfied.
 	IsEmpty string `json:"isEmpty,omitempty"`
-	// TypeHint is an optional explicit type hint for the field.
-	// When omitted, the codegen infers the type from usage in expressions or from IsEmpty.
-	TypeHint string `json:"type,omitempty"`
+	// TypeHint is a legacy internal codegen hint. It is never populated from
+	// public JSON, where the undocumented field "type" is rejected.
+	TypeHint string `json:"-"`
+}
+
+// ValidatorDef defines a named portable validator.
+type ValidatorDef struct {
+	Op      string
+	Pattern string
+	Value   *float64
+	Min     *float64
+	Max     *float64
+	Error   string
 }
 
 // ConditionDef defines a single condition in the schema.
@@ -69,10 +80,10 @@ type Expr struct {
 // Rule is a tagged union representing different rule types.
 // The "type" field determines which additional fields are relevant.
 type Rule struct {
-	Type      string   `json:"type"` // "enabledWhen", "disables", "requires", "fairWhen", "check", "excluded"
-	Field     string   `json:"field,omitempty"`
-	Fields    []string `json:"fields,omitempty"`
-	Group     string   `json:"group,omitempty"`
+	Type   string   `json:"type"` // "enabledWhen", "disables", "requires", "fairWhen", "check", "excluded"
+	Field  string   `json:"field,omitempty"`
+	Fields []string `json:"fields,omitempty"`
+	Group  string   `json:"group,omitempty"`
 	// Branches lists the field names that are branches of this oneOf/eitherOf group.
 	Branches  []string `json:"branches,omitempty"`
 	Expr      *Expr    `json:"expr,omitempty"`
@@ -91,7 +102,7 @@ type Rule struct {
 	// Check is an expression used for validation.
 	Check *Expr `json:"check,omitempty"`
 	// Source is the field that disables other fields (for "disables" rules).
-	Source string   `json:"source,omitempty"`
+	Source string `json:"source,omitempty"`
 	// Targets lists the fields disabled by the source (for "disables" rules).
 	Targets []string `json:"targets,omitempty"`
 }
@@ -114,8 +125,16 @@ func (s *Schema) Validate() error {
 		conditionTypes[c.Name] = c.Type
 	}
 
-	// Check all expression field/condition references
+	// Check all direct rule and expression field/condition references.
 	for _, r := range s.Rules {
+		if r.Type == "excluded" || r.Excluded {
+			continue
+		}
+		for _, ref := range append(append([]string{r.Field, r.Source}, r.Targets...), append(r.Requires, r.Branches...)...) {
+			if ref != "" && !fieldNames[ref] {
+				return fmt.Errorf("unknown field %q in rule", ref)
+			}
+		}
 		if r.Expr != nil {
 			if err := validateExprRefs(r.Expr, fieldNames, conditionNames, conditionTypes); err != nil {
 				return err
@@ -135,6 +154,12 @@ func (s *Schema) Validate() error {
 			if err := validateExprRefs(r.Check, fieldNames, conditionNames, conditionTypes); err != nil {
 				return err
 			}
+		}
+	}
+
+	for name := range s.Validators {
+		if !fieldNames[name] {
+			return fmt.Errorf("validator references unknown field %q", name)
 		}
 	}
 

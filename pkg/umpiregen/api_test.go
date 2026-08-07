@@ -60,7 +60,7 @@ func TestGenerateAcceptsSpecShapeAndCompiles(t *testing.T) {
 		},
 		"rules": [
 			{"type": "enabledWhen", "field": "submit", "when": {"op": "cond", "condition": "role"}},
-			{"type": "check", "field": "email", "check": {"op": "email"}, "reason": "Invalid email"}
+			{"type": "check", "field": "email", "op": "email", "reason": "Invalid email"}
 		]
 	}`)
 
@@ -99,11 +99,11 @@ func TestGenerateTruthyAndNumericChecksCompile(t *testing.T) {
 	}{
 		{
 			name: "truthy-inferred-string",
-			json: `{"fields":[{"name":"name"}],"conditions":[],"rules":[{"type":"enabledWhen","field":"name","expr":{"op":"truthy","field":"name"}}]}`,
+			json: `{"version":1,"fields":{"name":{}},"conditions":{},"rules":[{"type":"enabledWhen","field":"name","when":{"op":"truthy","field":"name"}}]}`,
 		},
 		{
 			name: "numeric-check",
-			json: `{"fields":[{"name":"age","type":"number"}],"conditions":[],"rules":[{"type":"check","field":"age","check":{"op":"min","value":18},"reason":"too young"}]}`,
+			json: `{"version":1,"fields":{"age":{"isEmpty":"number"}},"conditions":{},"rules":[{"type":"check","field":"age","op":"min","value":18,"reason":"too young"}]}`,
 		},
 	}
 	for _, tt := range cases {

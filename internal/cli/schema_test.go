@@ -11,19 +11,20 @@ func TestLoadSchema(t *testing.T) {
 	schemaPath := filepath.Join(tmpDir, "test.umpire.json")
 
 	schemaContent := `{
-  "fields": [
-    {"name": "country", "required": true},
-    {"name": "promoCode", "isEmpty": "string"}
-  ],
-  "conditions": [
-    {"name": "userRole", "type": "string"},
-    {"name": "isGuest", "type": "boolean"}
-  ],
+  "version": 1,
+  "fields": {
+    "country": {"required": true},
+    "promoCode": {"isEmpty": "string"}
+  },
+  "conditions": {
+    "userRole": {"type": "string"},
+    "isGuest": {"type": "boolean"}
+  },
   "rules": [
     {
       "type": "enabledWhen",
       "field": "country",
-      "expr": {"op": "present", "field": "country"}
+      "when": {"op": "present", "field": "country"}
     }
   ]
 }`
@@ -53,11 +54,11 @@ func TestLoadSchema(t *testing.T) {
 	if len(s.Conditions) != 2 {
 		t.Errorf("expected 2 conditions, got %d", len(s.Conditions))
 	}
-	if s.Conditions[0].Name != "userRole" {
-		t.Errorf("expected first condition name 'userRole', got %q", s.Conditions[0].Name)
+	if s.Conditions[0].Name != "isGuest" {
+		t.Errorf("expected first condition name 'isGuest', got %q", s.Conditions[0].Name)
 	}
-	if s.Conditions[0].Type != "string" {
-		t.Errorf("expected userRole type 'string', got %q", s.Conditions[0].Type)
+	if s.Conditions[0].Type != "boolean" {
+		t.Errorf("expected isGuest type 'boolean', got %q", s.Conditions[0].Type)
 	}
 
 	if len(s.Rules) != 1 {

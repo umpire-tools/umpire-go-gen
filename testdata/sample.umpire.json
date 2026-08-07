@@ -1,27 +1,30 @@
 {
-  "fields": [
-    {"name": "country", "required": true},
-    {"name": "promoCode"},
-    {"name": "itemsCount", "type": "number"},
-    {"name": "paymentCreditCard"},
-    {"name": "paymentBankTransfer"}
-  ],
-  "conditions": [
-    {"name": "userRole", "type": "string"},
-    {"name": "isGuest", "type": "boolean"}
-  ],
+  "version": 1,
+  "fields": {
+    "country": {"required": true},
+    "promoCode": {},
+    "itemsCount": {"isEmpty": "number"},
+    "paymentCreditCard": {},
+    "paymentBankTransfer": {}
+  },
+  "conditions": {
+    "userRole": {"type": "string"},
+    "isGuest": {"type": "boolean"}
+  },
   "rules": [
     {
       "type": "enabledWhen",
       "field": "country",
-      "expr": {"op": "present", "field": "country"},
+      "when": {"op": "present", "field": "country"},
       "reason": "Country is required"
     },
     {
       "type": "requires",
       "field": "promoCode",
-      "requires": ["country"]
-    },
+      "dependency": "country"
+    }
+  ],
+  "excluded": [
     {
       "type": "excluded",
       "description": "Legacy shipping rule"
