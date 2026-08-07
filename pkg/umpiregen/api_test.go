@@ -76,6 +76,26 @@ func TestGenerateAcceptsSpecShapeAndCompiles(t *testing.T) {
 	testutil.AssertGeneratedPackageCompiles(t, source)
 }
 
+func TestGenerateRejectsInvalidPublicSchemas(t *testing.T) {
+	for _, test := range []struct {
+		name, document, want string
+	}{
+		{"malformed JSON", `{`, "parse schema: invalid JSON"},
+		{"wrong version", `{"version":2,"fields":{"email":{}},"rules":[]}`, "parse schema: version"},
+		{"missing fields", `{"version":1,"rules":[]}`, "parse schema: fields"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, err := Generate([]byte(test.document), Config{PkgName: "availability", SchemaName: "Invalid"})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Generate() error = %v, want substring %q", err, test.want)
+			}
+			if source != "" {
+				t.Fatalf("Generate() source = %q, want empty output", source)
+			}
+		})
+	}
+}
+
 func TestGenerateNoRulesCompiles(t *testing.T) {
 	source, err := Generate([]byte(`{
 		"version": 1,
