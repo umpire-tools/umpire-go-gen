@@ -48,18 +48,48 @@ Adapt the `test` and `check` commands to your toolchain:
 - **Kotlin**: `run = "./gradlew test"`
 - **Python**: `run = "uv run pytest"`
 
+## Make (alternative)
+
+If you prefer a zero-dependency approach, a Makefile works the same way. Make is pre-installed on macOS and Linux, and `make test` is the idiomatic entry point for Go projects and many others.
+
+```makefile
+UMPIRE_SPEC_VERSION := v1.0.0
+UMPIRE_SPEC_SHA256  := abcd1234…  # tarball sha256; bump this when updating the version
+
+spec/.synced-at-version: Makefile
+	@tarball=$$(mktemp -t umpire-spec-XXXXXX.tar.gz); \
+	curl -fsSL "https://github.com/umpire-tools/umpire-spec/archive/refs/tags/$(UMPIRE_SPEC_VERSION).tar.gz" -o "$$tarball"; \
+	echo "$(UMPIRE_SPEC_SHA256)  $$tarball" | shasum -a 256 -c -; \
+	rm -rf spec/; \
+	mkdir -p spec/; \
+	tar -xzf "$$tarball" -C spec/ --strip-components=1; \
+	echo "$(UMPIRE_SPEC_VERSION)" > spec/.synced-at-version; \
+	rm "$$tarball"
+
+.PHONY: test
+test: spec/.synced-at-version
+	dart test  # or pytest, go test, etc.
+```
+
+Adapt the `test` target to your toolchain:
+
+- **Dart**: `dart test`
+- **Go**: `go test ./...`
+- **Kotlin**: `./gradlew test`
+- **Python**: `uv run pytest`
+
 ## Updating the pin
 
-When a new tag is released:
+When a new tag is released, update two variables (in `mise.toml`'s `[env]` or your Makefile):
 
-1. Update `UMPIRE_SPEC_VERSION` to the new tag (e.g. `v1.1.0`).
+1. Set `UMPIRE_SPEC_VERSION` to the new tag (e.g. `v1.1.0`).
 2. Compute the new tarball SHA-256:
    ```bash
    curl -fsSL "https://github.com/umpire-tools/umpire-spec/archive/refs/tags/v1.1.0.tar.gz" | shasum -a 256
    ```
-3. Update `UMPIRE_SPEC_SHA256` with the new hash.
+3. Set `UMPIRE_SPEC_SHA256` to the new hash.
 
-Both values live in the `[env]` block. A pin bump is a two-line diff, reviewable in a PR.
+A pin bump is a two-line diff, reviewable in a PR.
 
 ## Anti-patterns
 

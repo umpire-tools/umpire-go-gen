@@ -73,12 +73,23 @@ for (const entry of index.fixtures) {
   expectPass(entry.id, fixture.schema);
 }
 
-// --- Failure fixtures: schemas are structurally valid too ---
+// --- Failure fixtures ---
 console.log("\nFailure fixtures:");
 for (const entry of index.failures) {
   const fixture = JSON.parse(readFileSync(fixturePath(entry.path), "utf-8"));
   for (const failure of fixture.failures) {
-    expectPass(`${entry.id} / ${failure.id}`, failure.schema);
+    const metaSchema = failure.metaSchema ?? "accept";
+
+    if (metaSchema === "reject") {
+      expectFail(`${entry.id} / ${failure.id}`, failure.schema);
+    } else if (metaSchema === "accept") {
+      expectPass(`${entry.id} / ${failure.id}`, failure.schema);
+    } else {
+      console.log(
+        `  ✗ ${entry.id} / ${failure.id} (unknown metaSchema expectation "${String(metaSchema)}")`,
+      );
+      failed++;
+    }
   }
 }
 

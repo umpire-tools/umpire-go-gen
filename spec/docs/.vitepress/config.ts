@@ -4,6 +4,9 @@ export default defineConfig({
   title: 'Umpire Spec',
   description: 'Cross-language conformance specification for Umpire — JSON Schema + fixtures.',
   base: '/',
+  head: [
+    ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+  ],
   themeConfig: {
     appearance: 'dark',
     nav: [
