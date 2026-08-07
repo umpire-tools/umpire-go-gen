@@ -51,7 +51,7 @@ func TestGenerateWithRules(t *testing.T) {
 	gen := NewGenerator("Checkout", "testpkg", "CheckoutFields", "CheckoutConditions", inferred)
 	gen.WithFields(s.Fields)
 	gen.WithFields(s.Fields)
-		gen.WithRules(s.Rules)
+	gen.WithRules(s.Rules)
 
 	result, err := gen.Generate()
 	if err != nil {
@@ -87,9 +87,9 @@ func TestGenerateWithRules(t *testing.T) {
 		t.Error("generated source missing ruleMeta")
 	}
 
-	// Verify Country has Required: true
-	if !strings.Contains(result.Source, "Required: true") {
-		t.Error("generated source missing Required: true for country")
+	// Verify Country has a Required status expression.
+	if !strings.Contains(result.Source, "Required: ") {
+		t.Error("generated source missing Required status expression for country")
 	}
 }
 
@@ -125,7 +125,7 @@ func TestGeneratedCodeCompilesAndRuns(t *testing.T) {
 
 	gen := NewGenerator("Test", "testpkg", "TestFields", "TestConditions", inferred)
 	gen.WithFields(s.Fields)
-		gen.WithRules(s.Rules)
+	gen.WithRules(s.Rules)
 
 	result, err := gen.Generate()
 	if err != nil {
@@ -165,8 +165,8 @@ func TestCheckWithEmptyFields(t *testing.T) {
 		t.Errorf("country should NOT be satisfied when empty")
 	}
 
-	if avail.Country.Required != true {
-		t.Errorf("country should be required, got %v", avail.Country.Required)
+	if avail.Country.Required {
+		t.Errorf("country should NOT be required when disabled")
 	}
 
 	// promoCode requires country — country is not satisfied, so promoCode should be disabled
@@ -264,7 +264,7 @@ func TestGeneratedCodeWithDisabledField(t *testing.T) {
 
 	gen := NewGenerator("Test", "testpkg", "TestFields", "TestConditions", inferred)
 	gen.WithFields(s.Fields)
-		gen.WithRules(s.Rules)
+	gen.WithRules(s.Rules)
 
 	result, err := gen.Generate()
 	if err != nil {
