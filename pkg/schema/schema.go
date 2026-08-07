@@ -162,9 +162,14 @@ func (s *Schema) Validate() error {
 		}
 	}
 
-	for name := range s.Validators {
+	for name, validator := range s.Validators {
 		if !fieldNames[name] {
 			return fmt.Errorf("validator references unknown field %q", name)
+		}
+		if validator.Op == "matches" {
+			if _, err := regexp.Compile(validator.Pattern); err != nil {
+				return fmt.Errorf("Invalid regex pattern %q: %w", validator.Pattern, err)
+			}
 		}
 	}
 

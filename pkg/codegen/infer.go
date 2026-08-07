@@ -87,6 +87,8 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		} else if f.IsEmpty != "" {
 			// Use isEmpty to infer the type
 			ti.GoType = GoTypeForField(GoTypeName(f.IsEmpty), true)
+		} else if validatorType, ok := inferNamedValidatorType(f.Name, s); ok {
+			ti.GoType = validatorType
 		} else {
 			// Infer from expression usage, default to *string if ambiguous
 			ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
@@ -125,6 +127,22 @@ func traverseExprForRefs(e *schema.Expr, fieldRefs, condRefs map[string]bool) {
 	}
 	for _, child := range e.Exprs {
 		traverseExprForRefs(&child, fieldRefs, condRefs)
+	}
+}
+
+func inferNamedValidatorType(fieldName string, s *schema.Schema) (GoType, bool) {
+	validator, ok := s.Validators[fieldName]
+	if !ok {
+		return "", false
+	}
+
+	switch validator.Op {
+	case "min", "max", "range", "integer":
+		return GoFloat64Ptr, true
+	case "email", "url", "matches", "minLength", "maxLength":
+		return GoStringPtr, true
+	default:
+		return "", false
 	}
 }
 

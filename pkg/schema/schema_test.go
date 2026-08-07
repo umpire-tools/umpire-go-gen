@@ -188,9 +188,25 @@ func TestParseRejectsV1Failures(t *testing.T) {
 		{"empty dependencies", `{"version":1,"fields":{"email":{}},"rules":[{"type":"requires","field":"email","dependencies":[]}]}`, "dependencies"},
 		{"empty anyOf", `{"version":1,"fields":{"email":{}},"rules":[{"type":"anyOf","rules":[]}]}`, "anyOf"},
 		{"empty eitherOf branch", `{"version":1,"fields":{"email":{}},"rules":[{"type":"eitherOf","group":"g","branches":{"a":[]}}]}`, "branch"},
+		{"empty eitherOf", `{"version":1,"fields":{"email":{}},"rules":[{"type":"eitherOf","group":"g","branches":{}}]}`, "at least one branch"},
+		{"mixed anyOf targets", `{"version":1,"fields":{"email":{},"phone":{}},"rules":[{"type":"anyOf","rules":[{"type":"enabledWhen","field":"email","when":{"op":"present","field":"email"}},{"type":"enabledWhen","field":"phone","when":{"op":"present","field":"phone"}}]}]}`, "same fields"},
+		{"mixed anyOf constraints", `{"version":1,"fields":{"email":{}},"rules":[{"type":"anyOf","rules":[{"type":"enabledWhen","field":"email","when":{"op":"present","field":"email"}},{"type":"fairWhen","field":"email","when":{"op":"present","field":"email"}}]}]}`, "cannot mix"},
+		{"mixed eitherOf targets", `{"version":1,"fields":{"email":{},"phone":{}},"rules":[{"type":"eitherOf","group":"contact","branches":{"email":[{"type":"enabledWhen","field":"email","when":{"op":"present","field":"email"}}],"phone":[{"type":"enabledWhen","field":"phone","when":{"op":"present","field":"phone"}}]}}]}`, "same fields"},
+		{"invalid named validator regex", `{"version":1,"fields":{"email":{}},"rules":[],"validators":{"email":{"op":"matches","pattern":"["}}}`, "Invalid regex pattern"},
 		{"empty excluded", `{"version":1,"fields":{"email":{}},"rules":[],"excluded":[{"type":"","description":""}]}`, "Excluded"},
 	} {
 		t.Run(test.name, func(t *testing.T) { assertParseError(t, test.document, test.want) })
+	}
+}
+
+func TestParseAcceptsEmptyExpressionCombinators(t *testing.T) {
+	for _, op := range []string{"and", "or"} {
+		t.Run(op, func(t *testing.T) {
+			document := `{"version":1,"fields":{"target":{}},"rules":[{"type":"enabledWhen","field":"target","when":{"op":"` + op + `","exprs":[]}}]}`
+			if _, err := Parse([]byte(document)); err != nil {
+				t.Fatalf("Parse() error: %v", err)
+			}
+		})
 	}
 }
 

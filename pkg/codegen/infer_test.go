@@ -208,6 +208,27 @@ func TestInferTypes(t *testing.T) {
 	}
 }
 
+func TestInferTypesFromNamedValidators(t *testing.T) {
+	s := &schema.Schema{
+		Fields: []schema.FieldDef{{Name: "age"}, {Name: "email"}},
+		Validators: map[string]schema.ValidatorDef{
+			"age":   {Op: "min"},
+			"email": {Op: "email"},
+		},
+	}
+
+	inferred, err := InferTypes(s)
+	if err != nil {
+		t.Fatalf("InferTypes() error: %v", err)
+	}
+	if inferred.Fields[0].GoType != GoFloat64Ptr {
+		t.Errorf("age GoType = %v, want %v", inferred.Fields[0].GoType, GoFloat64Ptr)
+	}
+	if inferred.Fields[1].GoType != GoStringPtr {
+		t.Errorf("email GoType = %v, want %v", inferred.Fields[1].GoType, GoStringPtr)
+	}
+}
+
 func TestInferTypesWithComparison(t *testing.T) {
 	s := &schema.Schema{
 		Fields: []schema.FieldDef{

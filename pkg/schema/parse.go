@@ -319,7 +319,8 @@ func validateRule(raw json.RawMessage) error {
 		if err := closedMembers(rule, typeName+" rule", "type", "group", "branches"); err != nil {
 			return err
 		}
-		if !hasString(rule, "group") {
+		group, ok := requiredString(rule, "group")
+		if !ok {
 			return fmt.Errorf("%s group is required", typeName)
 		}
 		branchesRaw, present := rule["branches"]
@@ -330,12 +331,16 @@ func validateRule(raw json.RawMessage) error {
 		if err != nil {
 			return err
 		}
+		if typeName == "eitherOf" && len(branches) == 0 {
+			return fmt.Errorf("eitherOf(%q) requires at least one branch", group)
+		}
+		var nestedRules []json.RawMessage
 		for _, branch := range branches {
 			entries, err := rawArray(branch, "branch")
 			if err != nil {
 				return err
 			}
-			if len(entries) == 0 {
+			if typeName == "eitherOf" && len(entries) == 0 {
 				return fmt.Errorf("branch must not be empty")
 			}
 			for _, entry := range entries {
@@ -343,10 +348,16 @@ func validateRule(raw json.RawMessage) error {
 					if !isString(entry) {
 						return fmt.Errorf("branch fields must be strings")
 					}
-				} else if err := validateRule(entry); err != nil {
-					return err
+				} else {
+					if err := validateRule(entry); err != nil {
+						return err
+					}
+					nestedRules = append(nestedRules, entry)
 				}
 			}
+		}
+		if typeName == "eitherOf" {
+			return validateCompositeRules(fmt.Sprintf("eitherOf(%q)", group), nestedRules)
 		}
 		return nil
 	case "anyOf":
@@ -369,7 +380,7 @@ func validateRule(raw json.RawMessage) error {
 				return err
 			}
 		}
-		return nil
+		return validateCompositeRules("anyOf", rules)
 	case "check":
 		if err := closedMembers(rule, "check rule", "type", "field", "reason", "op", "pattern", "value", "min", "max"); err != nil {
 			return err
@@ -384,6 +395,125 @@ func validateRule(raw json.RawMessage) error {
 	default:
 		return fmt.Errorf("unsupported rule type %q", typeName)
 	}
+}
+
+type publicRuleConstraint string
+
+const (
+	publicEnabledConstraint publicRuleConstraint = "enabled"
+	publicFairConstraint    publicRuleConstraint = "fair"
+)
+
+func validateCompositeRules(label string, rules []json.RawMessage) error {
+	if len(rules) == 0 {
+		return fmt.Errorf("%s requires at least one rule", label)
+	}
+
+	expectedTargets, expectedConstraint, err := publicRuleShape(rules[0])
+	if err != nil {
+		return err
+	}
+	for _, raw := range rules[1:] {
+		targets, constraint, err := publicRuleShape(raw)
+		if err != nil {
+			return err
+		}
+		if !equalStrings(targets, expectedTargets) {
+			return fmt.Errorf("%s rules must target the same fields", label)
+		}
+		if constraint != expectedConstraint {
+			return fmt.Errorf("%s cannot mix fairness and availability rules", label)
+		}
+	}
+	return nil
+}
+
+func publicRuleShape(raw json.RawMessage) ([]string, publicRuleConstraint, error) {
+	rule, err := rawObject(raw, "rule")
+	if err != nil {
+		return nil, "", err
+	}
+	typeName, ok := requiredString(rule, "type")
+	if !ok {
+		return nil, "", fmt.Errorf("rule type is required")
+	}
+
+	var targets []string
+	constraint := publicEnabledConstraint
+	switch typeName {
+	case "requires", "enabledWhen":
+		field, _ := requiredString(rule, "field")
+		targets = []string{field}
+	case "fairWhen", "check":
+		field, _ := requiredString(rule, "field")
+		targets = []string{field}
+		constraint = publicFairConstraint
+	case "disables":
+		entries, _ := rawArray(rule["targets"], "targets")
+		for _, entry := range entries {
+			field, _ := stringValue(entry)
+			targets = append(targets, field)
+		}
+	case "oneOf":
+		branches, _ := rawObject(rule["branches"], "branches")
+		for _, branch := range branches {
+			entries, _ := rawArray(branch, "branch")
+			for _, entry := range entries {
+				field, _ := stringValue(entry)
+				targets = append(targets, field)
+			}
+		}
+	case "anyOf":
+		rules, _ := rawArray(rule["rules"], "anyOf rules")
+		firstTargets, firstConstraint, err := publicRuleShape(rules[0])
+		if err != nil {
+			return nil, "", err
+		}
+		targets, constraint = firstTargets, firstConstraint
+	case "eitherOf":
+		branches, _ := rawObject(rule["branches"], "branches")
+		for _, branch := range branches {
+			rules, _ := rawArray(branch, "branch")
+			if len(rules) == 0 {
+				continue
+			}
+			firstTargets, firstConstraint, err := publicRuleShape(rules[0])
+			if err != nil {
+				return nil, "", err
+			}
+			targets, constraint = firstTargets, firstConstraint
+			break
+		}
+	default:
+		return nil, "", fmt.Errorf("unsupported rule type %q", typeName)
+	}
+
+	return uniqueSortedStrings(targets), constraint, nil
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateExpr(raw json.RawMessage) error {
@@ -465,9 +595,6 @@ func validateExpr(raw json.RawMessage) error {
 		children, err := rawArray(expr["exprs"], "exprs")
 		if err != nil {
 			return err
-		}
-		if len(children) == 0 {
-			return fmt.Errorf("expression %s requires non-empty exprs", op)
 		}
 		for _, child := range children {
 			if err := validateExpr(child); err != nil {

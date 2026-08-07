@@ -105,6 +105,9 @@ func (c *ExprCompiler) compileExpr(e *schema.Expr) string {
 
 // compileAnd combines sub-expressions with &&.
 func (c *ExprCompiler) compileAnd(e *schema.Expr) string {
+	if len(e.Exprs) == 0 {
+		return "true"
+	}
 	var parts []string
 	for _, sub := range e.Exprs {
 		parts = append(parts, c.compileExpr(&sub))
@@ -114,6 +117,9 @@ func (c *ExprCompiler) compileAnd(e *schema.Expr) string {
 
 // compileOr combines sub-expressions with ||.
 func (c *ExprCompiler) compileOr(e *schema.Expr) string {
+	if len(e.Exprs) == 0 {
+		return "false"
+	}
 	var parts []string
 	for _, sub := range e.Exprs {
 		parts = append(parts, c.compileExpr(&sub))

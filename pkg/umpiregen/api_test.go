@@ -105,6 +105,10 @@ func TestGenerateTruthyAndNumericChecksCompile(t *testing.T) {
 			name: "numeric-check",
 			json: `{"version":1,"fields":{"age":{"isEmpty":"number"}},"conditions":{},"rules":[{"type":"check","field":"age","op":"min","value":18,"reason":"too young"}]}`,
 		},
+		{
+			name: "numeric-named-validator",
+			json: `{"version":1,"fields":{"age":{}},"conditions":{},"rules":[],"validators":{"age":{"op":"min","value":18,"error":"too young"}}}`,
+		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
