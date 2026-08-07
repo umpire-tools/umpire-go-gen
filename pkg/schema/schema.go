@@ -130,7 +130,12 @@ func (s *Schema) Validate() error {
 		if r.Type == "excluded" || r.Excluded {
 			continue
 		}
-		for _, ref := range append(append([]string{r.Field, r.Source}, r.Targets...), append(r.Requires, r.Branches...)...) {
+		refs := append(append([]string{r.Field, r.Source}, r.Targets...), r.Requires...)
+		// oneOf branches name fields, while eitherOf branches name logical paths.
+		if r.Type == "oneOf" {
+			refs = append(refs, r.Branches...)
+		}
+		for _, ref := range refs {
 			if ref != "" && !fieldNames[ref] {
 				return fmt.Errorf("unknown field %q in rule", ref)
 			}

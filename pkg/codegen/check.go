@@ -582,7 +582,10 @@ func (g *CheckGenerator) addBlockingReasonChecks(b *strings.Builder, fd *FieldRu
 	// Handle eitherOf: reasons come from failing branches
 	// For the FIRST branch: find the first failing sub-condition's reason (primary Reason)
 	// For ALL branches: collect the first reason of each failing branch (Reasons)
-	if fd.IsEitherOf && len(fd.Enabled.BranchExprs) > 0 { // For each branch, if the branch expression fails, add the first reason
+	if fd.IsEitherOf && len(fd.Enabled.BranchExprs) > 0 {
+		// A passing branch makes the field available/fair, so no failed sibling
+		// should contribute a blocking reason.
+		b.WriteString("\t\t\t\tif !(" + strings.Join(fd.Enabled.BranchExprs, " || ") + ") {\n")
 		for i, branchExpr := range fd.Enabled.BranchExprs {
 			// Collect ALL reasons for this branch (per the test expectations)
 			// The branch's sub-conditions all need to be considered
@@ -625,6 +628,7 @@ func (g *CheckGenerator) addBlockingReasonChecks(b *strings.Builder, fd *FieldRu
 				}
 			}
 		}
+		b.WriteString("\t\t\t\t}\n")
 		return
 	}
 

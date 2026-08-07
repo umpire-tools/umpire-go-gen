@@ -2,8 +2,8 @@ package codegen
 
 import (
 	"fmt"
-	"testing"
 	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
+	"testing"
 )
 
 func TestCheckCompile(t *testing.T) {

@@ -23,9 +23,9 @@ type ConditionTypeInfo struct {
 
 // OneOfBranch represents a branch of a oneOf or eitherOf group.
 type OneOfBranch struct {
-	GroupName    string       // e.g. "PaymentBranch"
-	Branch       string       // e.g. "CreditCard" (Go/PascalCase field name)
-	OriginalName string       // e.g. "creditCard" (original JSON field name, used for reason text)
+	GroupName    string // e.g. "PaymentBranch"
+	Branch       string // e.g. "CreditCard" (Go/PascalCase field name)
+	OriginalName string // e.g. "creditCard" (original JSON field name, used for reason text)
 	Index        int
 	Expression   *schema.Expr // combined condition that activates this branch (from when clauses)
 	IsOneOf      bool         // true for oneOf (mutually exclusive), false for eitherOf
@@ -73,27 +73,27 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		}
 	}
 
-// Build field type info
-inferred := &InferredSchema{}
-for _, f := range s.Fields {
-	ti := FieldTypeInfo{
-		Name:    f.Name,
-		JSONTag: camelToJSONTag(GoFieldName(f.Name)),
-	}
+	// Build field type info
+	inferred := &InferredSchema{}
+	for _, f := range s.Fields {
+		ti := FieldTypeInfo{
+			Name:    f.Name,
+			JSONTag: camelToJSONTag(GoFieldName(f.Name)),
+		}
 
-	// Use explicit type hint if present
-	if f.TypeHint != "" {
-		ti.GoType = GoTypeName(f.TypeHint)
-	} else if f.IsEmpty != "" {
-		// Use isEmpty to infer the type
-		ti.GoType = GoTypeForField(GoTypeName(f.IsEmpty), true)
-	} else {
-		// Infer from expression usage, default to *string if ambiguous
-		ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
-	}
+		// Use explicit type hint if present
+		if f.TypeHint != "" {
+			ti.GoType = GoTypeName(f.TypeHint)
+		} else if f.IsEmpty != "" {
+			// Use isEmpty to infer the type
+			ti.GoType = GoTypeForField(GoTypeName(f.IsEmpty), true)
+		} else {
+			// Infer from expression usage, default to *string if ambiguous
+			ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
+		}
 
-	inferred.Fields = append(inferred.Fields, ti)
-}
+		inferred.Fields = append(inferred.Fields, ti)
+	}
 
 	// Build condition type info
 	for _, c := range s.Conditions {
@@ -547,7 +547,6 @@ func branchRuleType(s *schema.Schema, branchName string) string {
 	}
 	return "enabledWhen"
 }
-
 
 // splitCamelCase splits a camelCase string into its component words.
 // Acronym runs (e.g., HTTP in HTTPResponse) are kept together.
