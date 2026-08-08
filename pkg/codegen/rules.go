@@ -36,6 +36,12 @@ func joinAnd(a, b string) string {
 	return "(" + a + " && " + b + ")"
 }
 
+// ValidatorRule holds the compiled expression and error for a named validator.
+type ValidatorRule struct {
+	Expr  string
+	Error string
+}
+
 // FieldRuleData holds all rule contributions for a single field, plus metadata.
 type FieldRuleData struct {
 	GoName     string
@@ -46,6 +52,7 @@ type FieldRuleData struct {
 	Requires   []RuleContribution
 	Fair       RuleContribution
 	Check      RuleContribution
+	Validator  *ValidatorRule
 	IsEitherOf bool // true if this field's enabledWhen comes from an eitherOf
 	IsFairOf   bool // true if this field's eitherOf branches are fairWhen (not enabledWhen)
 }
@@ -263,6 +270,37 @@ func (rc *RuleCompiler) CompileRules(rules []schema.Rule) map[string]*FieldRuleD
 						}
 					}
 				}
+			}
+		}
+	}
+
+	if rc.schema != nil && rc.schema.Validators != nil {
+		for name, validator := range rc.schema.Validators {
+			fd, ok := rc.result[GoFieldName(name)]
+			if !ok {
+				continue
+			}
+
+			validatorExpr := &schema.Expr{Op: validator.Op, Field: name}
+			switch validator.Op {
+			case "matches":
+				validatorExpr.Value = validator.Pattern
+				validatorExpr.Pattern = validator.Pattern
+			case "minLength", "maxLength", "min", "max":
+				if validator.Value == nil {
+					continue
+				}
+				validatorExpr.Value = *validator.Value
+			case "range":
+				if validator.Min == nil || validator.Max == nil {
+					continue
+				}
+				validatorExpr.Value = map[string]float64{"min": *validator.Min, "max": *validator.Max}
+			}
+
+			compiled, err := comp.Compile(validatorExpr)
+			if err == nil {
+				fd.Validator = &ValidatorRule{Expr: compiled, Error: validator.Error}
 			}
 		}
 	}

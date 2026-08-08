@@ -60,7 +60,7 @@ func TestGenerateAcceptsSpecShapeAndCompiles(t *testing.T) {
 		},
 		"rules": [
 			{"type": "enabledWhen", "field": "submit", "when": {"op": "cond", "condition": "role"}},
-			{"type": "check", "field": "email", "check": {"op": "email"}, "reason": "Invalid email"}
+			{"type": "check", "field": "email", "op": "email", "reason": "Invalid email"}
 		]
 	}`)
 
@@ -74,6 +74,26 @@ func TestGenerateAcceptsSpecShapeAndCompiles(t *testing.T) {
 		}
 	}
 	testutil.AssertGeneratedPackageCompiles(t, source)
+}
+
+func TestGenerateRejectsInvalidPublicSchemas(t *testing.T) {
+	for _, test := range []struct {
+		name, document, want string
+	}{
+		{"malformed JSON", `{`, "parse schema: invalid JSON"},
+		{"wrong version", `{"version":2,"fields":{"email":{}},"rules":[]}`, "parse schema: version"},
+		{"missing fields", `{"version":1,"rules":[]}`, "parse schema: fields"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, err := Generate([]byte(test.document), Config{PkgName: "availability", SchemaName: "Invalid"})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Generate() error = %v, want substring %q", err, test.want)
+			}
+			if source != "" {
+				t.Fatalf("Generate() source = %q, want empty output", source)
+			}
+		})
+	}
 }
 
 func TestGenerateNoRulesCompiles(t *testing.T) {
@@ -99,11 +119,15 @@ func TestGenerateTruthyAndNumericChecksCompile(t *testing.T) {
 	}{
 		{
 			name: "truthy-inferred-string",
-			json: `{"fields":[{"name":"name"}],"conditions":[],"rules":[{"type":"enabledWhen","field":"name","expr":{"op":"truthy","field":"name"}}]}`,
+			json: `{"version":1,"fields":{"name":{}},"conditions":{},"rules":[{"type":"enabledWhen","field":"name","when":{"op":"truthy","field":"name"}}]}`,
 		},
 		{
 			name: "numeric-check",
-			json: `{"fields":[{"name":"age","type":"number"}],"conditions":[],"rules":[{"type":"check","field":"age","check":{"op":"min","value":18},"reason":"too young"}]}`,
+			json: `{"version":1,"fields":{"age":{"isEmpty":"number"}},"conditions":{},"rules":[{"type":"check","field":"age","op":"min","value":18,"reason":"too young"}]}`,
+		},
+		{
+			name: "numeric-named-validator",
+			json: `{"version":1,"fields":{"age":{}},"conditions":{},"rules":[],"validators":{"age":{"op":"min","value":18,"error":"too young"}}}`,
 		},
 	}
 	for _, tt := range cases {

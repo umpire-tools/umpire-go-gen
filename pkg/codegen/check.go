@@ -21,21 +21,21 @@ func isValidRegexPattern(s, pattern string) bool {
 
 // OneOfGroup represents a oneOf/eitherOf group with its branches.
 type OneOfGroup struct {
-	Name     string         // e.g. "BullpenCallBranch"
-	Branches []OneOfBranch  // branches with their activation conditions
-	IsOneOf  bool           // true for oneOf (mutually exclusive), false for eitherOf
+	Name     string        // e.g. "BullpenCallBranch"
+	Branches []OneOfBranch // branches with their activation conditions
+	IsOneOf  bool          // true for oneOf (mutually exclusive), false for eitherOf
 }
 
 // CheckGenerator produces the Check function and helper for evaluating FieldStatus.
 type CheckGenerator struct {
-	availName     string
-	fieldsName    string
-	condName      string
-	fields        []FieldTypeInfo
-	fieldTypes    map[string]GoType
-	fieldRuleMap  map[string]*FieldRuleData
-	oneOfGroups   []OneOfGroup
-	exprCompile   func(*schema.Expr) (string, error)
+	availName    string
+	fieldsName   string
+	condName     string
+	fields       []FieldTypeInfo
+	fieldTypes   map[string]GoType
+	fieldRuleMap map[string]*FieldRuleData
+	oneOfGroups  []OneOfGroup
+	exprCompile  func(*schema.Expr) (string, error)
 }
 
 // NewCheckGenerator creates a CheckGenerator.
@@ -45,14 +45,14 @@ func NewCheckGenerator(availName, fieldsName, condName string, fields []FieldTyp
 		fieldTypes[ft.Name] = ft.GoType
 	}
 	return &CheckGenerator{
-		availName:     availName,
-		fieldsName:    fieldsName,
-		condName:      condName,
-		fields:        fields,
-		fieldTypes:    fieldTypes,
-		fieldRuleMap:  frd,
-		oneOfGroups:   oneOfGroups,
-		exprCompile:   nil, // will be set via WithExprCompiler
+		availName:    availName,
+		fieldsName:   fieldsName,
+		condName:     condName,
+		fields:       fields,
+		fieldTypes:   fieldTypes,
+		fieldRuleMap: frd,
+		oneOfGroups:  oneOfGroups,
+		exprCompile:  nil, // will be set via WithExprCompiler
 	}
 }
 
@@ -214,32 +214,106 @@ func (g *CheckGenerator) genCheckBody() string {
 		b.WriteString(" = ")
 		b.WriteString(group.Name)
 		b.WriteString("None\n")
-		for _, branch := range group.Branches {
-			if branch.Expression != nil && g.exprCompile != nil {
-				exprStr, err := g.exprCompile(branch.Expression)
-				if err == nil && exprStr != "" {
-					b.WriteString("\tif ")
-					b.WriteString(exprStr)
-					b.WriteString(" {\n")
+
+		if group.IsOneOf {
+			b.WriteString("\t// resolved from previous snapshot\n")
+			b.WriteString("\t{\n")
+			b.WriteString("\t\tvar satisfied []")
+			b.WriteString(group.Name)
+			b.WriteString("\n")
+			b.WriteString("\t\tvar previouslySatisfied []")
+			b.WriteString(group.Name)
+			b.WriteString("\n")
+			for _, branch := range group.Branches {
+				b.WriteString("\t\tif depSatisfied(f, ")
+				b.WriteString(q(branch.Branch))
+				b.WriteString(") { satisfied = append(satisfied, ")
+				b.WriteString(branch.Branch)
+				b.WriteString(") }\n")
+				b.WriteString("\t\tif depSatisfied(prev, ")
+				b.WriteString(q(branch.Branch))
+				b.WriteString(") { previouslySatisfied = append(previouslySatisfied, ")
+				b.WriteString(branch.Branch)
+				b.WriteString(") }\n")
+			}
+			b.WriteString("\t\tif len(satisfied) == 1 {\n")
+			b.WriteString("\t\t\t")
+			b.WriteString(group.Name)
+			b.WriteString("Active = satisfied[0]\n")
+			b.WriteString("\t\t} else if len(satisfied) > 1 {\n")
+			b.WriteString("\t\t\tvar newly []")
+			b.WriteString(group.Name)
+			b.WriteString("\n")
+			b.WriteString("\t\t\tfor _, b := range satisfied {\n")
+			b.WriteString("\t\t\t\tfound := false\n")
+			b.WriteString("\t\t\t\tfor _, pb := range previouslySatisfied {\n")
+			b.WriteString("\t\t\t\t\tif b == pb {\n")
+			b.WriteString("\t\t\t\t\t\tfound = true\n")
+			b.WriteString("\t\t\t\t\t\tbreak\n")
+			b.WriteString("\t\t\t\t\t}\n")
+			b.WriteString("\t\t\t\t}\n")
+			b.WriteString("\t\t\t\tif !found {\n")
+			b.WriteString("\t\t\t\t\tnewly = append(newly, b)\n")
+			b.WriteString("\t\t\t\t}\n")
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t\tif len(newly) == 1 {\n")
+			b.WriteString("\t\t\t\t")
+			b.WriteString(group.Name)
+			b.WriteString("Active = newly[0]\n")
+			b.WriteString("\t\t\t} else {\n")
+			b.WriteString("\t\t\t\t")
+			b.WriteString(group.Name)
+			b.WriteString("Active = satisfied[0]\n")
+			b.WriteString("\t\t\t}\n")
+			b.WriteString("\t\t}\n")
+			b.WriteString("\t}\n")
+		} else {
+			for _, branch := range group.Branches {
+				if branch.Expression != nil && g.exprCompile != nil {
+					exprStr, err := g.exprCompile(branch.Expression)
+					if err == nil && exprStr != "" {
+						b.WriteString("\tif ")
+						b.WriteString(exprStr)
+						b.WriteString(" {\n")
+					} else {
+						b.WriteString("\tif depSatisfied(f, ")
+						b.WriteString(q(branch.Branch))
+						b.WriteString(") {\n")
+					}
 				} else {
 					b.WriteString("\tif depSatisfied(f, ")
 					b.WriteString(q(branch.Branch))
 					b.WriteString(") {\n")
 				}
-			} else {
-				b.WriteString("\tif depSatisfied(f, ")
-				b.WriteString(q(branch.Branch))
-				b.WriteString(") {\n")
+				b.WriteString("\t\t")
+				b.WriteString(group.Name)
+				b.WriteString("Active = ")
+				b.WriteString(branch.Branch)
+				b.WriteString("\n")
+				b.WriteString("\t}\n")
 			}
-			b.WriteString("\t\t")
-			b.WriteString(group.Name)
-			b.WriteString("Active = ")
-			b.WriteString(branch.Branch)
-			b.WriteString("\n")
-			b.WriteString("\t}\n")
 		}
 		b.WriteString("\n")
 	}
+
+	for _, ft := range g.fields {
+		gn := GoFieldName(ft.Name)
+		fd := g.fieldRuleMap[gn]
+		if fd == nil {
+			fd = &FieldRuleData{GoName: gn}
+		}
+		b.WriteString("\t")
+		b.WriteString(gn)
+		b.WriteString("Enabled := ")
+		g.emitEnabled(&b, fd)
+		b.WriteString("\n")
+		b.WriteString("\t")
+		b.WriteString(gn)
+		b.WriteString("Satisfied := ")
+		g.emitSatisfied(&b, gn, ft.GoType, ft.GoType.Base(), ft.GoType.Nullable(), fd.IsEmpty)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 
 	b.WriteString("\treturn ")
 	b.WriteString(g.availName)
@@ -270,16 +344,14 @@ func (g *CheckGenerator) genCheckBody() string {
 
 func (g *CheckGenerator) writeFieldStatus(b *strings.Builder, ft FieldTypeInfo, fd *FieldRuleData) {
 	gn := GoFieldName(ft.Name)
-	goType := ft.GoType
-	isPtr := goType.Nullable()
-	base := goType.Base()
-
 	b.WriteString("\t\t")
 	b.WriteString(gn)
 	b.WriteString(": FieldStatus{\n")
 
 	// Required
 	b.WriteString("\t\t\tRequired: ")
+	b.WriteString(gn)
+	b.WriteString("Enabled && ")
 	if fd.Required {
 		b.WriteString("true")
 	} else {
@@ -289,13 +361,13 @@ func (g *CheckGenerator) writeFieldStatus(b *strings.Builder, ft FieldTypeInfo, 
 
 	// Enabled
 	b.WriteString("\t\t\tEnabled: ")
-	g.emitEnabled(b, fd)
-	b.WriteString(",\n")
+	b.WriteString(gn)
+	b.WriteString("Enabled,\n")
 
 	// Satisfied
 	b.WriteString("\t\t\tSatisfied: ")
-	g.emitSatisfied(b, gn, goType, base, isPtr, fd.IsEmpty)
-	b.WriteString(",\n")
+	b.WriteString(gn)
+	b.WriteString("Satisfied,\n")
 
 	// Fair
 	b.WriteString("\t\t\tFair: ")
@@ -312,23 +384,39 @@ func (g *CheckGenerator) writeFieldStatus(b *strings.Builder, ft FieldTypeInfo, 
 	b.WriteString("Reasons: ")
 	g.emitReasons(b, fd)
 
-	// Valid / Error - from check rule
-	if fd.Check.Expr != "" {
-		b.WriteString("\t\t\tValid: func() *bool { v := ")
-		b.WriteString(fd.Check.Expr)
-		b.WriteString("; return &v }(),\n")
-		b.WriteString("\t\t\tError: func() string { if ")
-		b.WriteString(fd.Check.Expr)
-		b.WriteString(" { return \"\" }; return ")
-		if fd.Check.Reason != "" {
-			b.WriteString(q(fd.Check.Reason))
-		} else {
-			b.WriteString("\"validation failed\"")
-		}
-		b.WriteString(" }(),\n")
+	// Valid / Error - from named validator
+	if fd.Validator == nil {
+		b.WriteString("\t\t\tValid: nil,\n")
+		b.WriteString("\t\t\tError: \"\",\n")
 	} else {
-		b.WriteString("\t\t\tValid:     nil,\n")
-		b.WriteString("\t\t\tError:     \"\",\n")
+		b.WriteString("\t\t\tValid: func() *bool {\n")
+		b.WriteString("\t\t\t\tif ")
+		b.WriteString(gn)
+		b.WriteString("Enabled && ")
+		b.WriteString(gn)
+		b.WriteString("Satisfied {\n")
+		b.WriteString("\t\t\t\t\tv := ")
+		b.WriteString(fd.Validator.Expr)
+		b.WriteString("\n")
+		b.WriteString("\t\t\t\t\treturn &v\n")
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString("\t\t\t\treturn nil\n")
+		b.WriteString("\t\t\t}(),\n")
+		b.WriteString("\t\t\tError: func() string {\n")
+		b.WriteString("\t\t\t\tif ")
+		b.WriteString(gn)
+		b.WriteString("Enabled && ")
+		b.WriteString(gn)
+		b.WriteString("Satisfied {\n")
+		b.WriteString("\t\t\t\t\tv := ")
+		b.WriteString(fd.Validator.Expr)
+		b.WriteString("\n")
+		b.WriteString("\t\t\t\t\tif !v { return ")
+		b.WriteString(q(fd.Validator.Error))
+		b.WriteString(" }\n")
+		b.WriteString("\t\t\t\t}\n")
+		b.WriteString("\t\t\t\treturn \"\"\n")
+		b.WriteString("\t\t\t}(),\n")
 	}
 
 	b.WriteString("\t\t},\n")
@@ -375,6 +463,10 @@ func (g *CheckGenerator) emitEnabled(b *strings.Builder, fd *FieldRuleData) {
 				// This field is a branch in this group
 				b.WriteString("func() bool {\n")
 				b.WriteString("\tif ")
+				b.WriteString(group.Name)
+				b.WriteString("Active != ")
+				b.WriteString(group.Name)
+				b.WriteString("None && ")
 				b.WriteString(group.Name)
 				b.WriteString("Active != ")
 				b.WriteString(fd.GoName)
@@ -490,7 +582,10 @@ func (g *CheckGenerator) addBlockingReasonChecks(b *strings.Builder, fd *FieldRu
 	// Handle eitherOf: reasons come from failing branches
 	// For the FIRST branch: find the first failing sub-condition's reason (primary Reason)
 	// For ALL branches: collect the first reason of each failing branch (Reasons)
-	if fd.IsEitherOf && len(fd.Enabled.BranchExprs) > 0 {		// For each branch, if the branch expression fails, add the first reason
+	if fd.IsEitherOf && len(fd.Enabled.BranchExprs) > 0 {
+		// A passing branch makes the field available/fair, so no failed sibling
+		// should contribute a blocking reason.
+		b.WriteString("\t\t\t\tif !(" + strings.Join(fd.Enabled.BranchExprs, " || ") + ") {\n")
 		for i, branchExpr := range fd.Enabled.BranchExprs {
 			// Collect ALL reasons for this branch (per the test expectations)
 			// The branch's sub-conditions all need to be considered
@@ -533,6 +628,7 @@ func (g *CheckGenerator) addBlockingReasonChecks(b *strings.Builder, fd *FieldRu
 				}
 			}
 		}
+		b.WriteString("\t\t\t\t}\n")
 		return
 	}
 
@@ -632,7 +728,6 @@ func (g *CheckGenerator) addBlockingReasonChecks(b *strings.Builder, fd *FieldRu
 		b.WriteString("\t\t\t\t}\n")
 	}
 
-
 }
 
 // q wraps a string in double quotes for Go source output.
@@ -657,7 +752,7 @@ func (g *CheckGenerator) fieldEnabledExpr(goName string) string {
 		}
 		for _, branch := range group.Branches {
 			if branch.Branch == goName {
-				return fmt.Sprintf("%sActive == %s", group.Name, goName)
+				return fmt.Sprintf("(%sActive == %sNone || %sActive == %s)", group.Name, group.Name, group.Name, goName)
 			}
 		}
 	}

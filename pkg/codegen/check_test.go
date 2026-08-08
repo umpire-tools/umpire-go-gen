@@ -1,9 +1,8 @@
 package codegen
 
 import (
-	"fmt"
-	"testing"
 	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
+	"testing"
 )
 
 func TestCheckCompile(t *testing.T) {
@@ -28,5 +27,8 @@ func TestCheckCompile(t *testing.T) {
 	if err != nil {
 		t.Fatal("Error:", err)
 	}
-	fmt.Println("Compiled:", result)
+	expected := "isValidEmail(f.ScorerEmail)"
+	if result != expected {
+		t.Errorf("got %q, want %q", result, expected)
+	}
 }

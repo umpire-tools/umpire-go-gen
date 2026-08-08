@@ -1,5 +1,5 @@
-UMPIRE_SPEC_VERSION := v1.0.0
-UMPIRE_SPEC_SHA256  := 71e7d71391e90eefe4c46c1266fbd7d57ba39f5ef72360f9a8b1c593f576fed3
+UMPIRE_SPEC_VERSION := v1.0.1
+UMPIRE_SPEC_SHA256  := af1b8c3fae9f628d26320b7fd02121a154dfbde8a6e57643971c767191895dc2
 
 spec/.synced-at-version: Makefile
 	@tarball=$$(mktemp -t umpire-spec-XXXXXX.tar.gz); \

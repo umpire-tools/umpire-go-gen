@@ -8,55 +8,49 @@ import (
 	"unicode"
 )
 
-// Parse reads a .umpire.json payload. It accepts both the public umpire-spec
-// shape and the older internal array shape used by early generator tests.
+// Parse reads a public Umpire v1 document and converts it to the internal model.
 func Parse(data []byte) (*Schema, error) {
-	var internal Schema
-	if err := json.Unmarshal(data, &internal); err == nil {
-		if len(internal.Fields) > 0 {
-			return &internal, nil
-		}
-	} else if looksLikeInternalSchema(data) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if err := validatePublicSchema(raw); err != nil {
 		return nil, err
 	}
 
 	var spec specSchema
 	if err := json.Unmarshal(data, &spec); err != nil {
+		return nil, fmt.Errorf("invalid public schema: %w", err)
+	}
+	s := convertSpecSchema(&spec, captureRuleBranchesOrder(data))
+	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	if len(spec.Fields) == 0 {
-		return nil, fmt.Errorf("schema must have at least one field definition")
-	}
-	return convertSpecSchema(&spec, captureRuleBranchesOrder(data)), nil
-}
-
-func looksLikeInternalSchema(data []byte) bool {
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return false
-	}
-	for _, key := range []string{"fields", "conditions"} {
-		value := bytes.TrimSpace(raw[key])
-		if len(value) > 0 && value[0] == '[' {
-			return true
-		}
-	}
-	return false
+	return s, nil
 }
 
 type specSchema struct {
-	Version    int                     `json:"version"`
-	Fields     map[string]specFieldDef `json:"fields"`
-	Conditions map[string]specCondDef  `json:"conditions"`
-	Rules      []specRuleDef           `json:"rules"`
-	Excluded   []specExcluded          `json:"excluded,omitempty"`
+	Version    int                         `json:"version"`
+	Fields     map[string]specFieldDef     `json:"fields"`
+	Conditions map[string]specCondDef      `json:"conditions"`
+	Rules      []specRuleDef               `json:"rules"`
+	Validators map[string]specValidatorDef `json:"validators,omitempty"`
+	Excluded   []specExcluded              `json:"excluded,omitempty"`
 }
 
 type specFieldDef struct {
-	Required bool   `json:"required"`
-	IsEmpty  any    `json:"isEmpty,omitempty"`
-	TypeHint string `json:"type,omitempty"`
-	Default  any    `json:"default,omitempty"`
+	Required bool `json:"required"`
+	IsEmpty  any  `json:"isEmpty,omitempty"`
+	Default  any  `json:"default,omitempty"`
+}
+
+type specValidatorDef struct {
+	Op      string   `json:"op"`
+	Pattern string   `json:"pattern,omitempty"`
+	Value   *float64 `json:"value,omitempty"`
+	Min     *float64 `json:"min,omitempty"`
+	Max     *float64 `json:"max,omitempty"`
+	Error   string   `json:"error,omitempty"`
 }
 
 type specCondDef struct {
@@ -94,6 +88,760 @@ type specExcluded struct {
 	Description string `json:"description,omitempty"`
 }
 
+func validatePublicSchema(doc map[string]json.RawMessage) error {
+	if err := closedMembers(doc, "top-level schema", "version", "conditions", "fields", "rules", "validators", "excluded"); err != nil {
+		return fmt.Errorf("fields: %w", err)
+	}
+	fields, ok := doc["fields"]
+	if !ok {
+		return fmt.Errorf("fields is required")
+	}
+	fieldDefs, err := rawObject(fields, "fields")
+	if err != nil {
+		return err
+	}
+	if len(fieldDefs) == 0 {
+		return fmt.Errorf("fields must contain at least one field")
+	}
+	version, ok := doc["version"]
+	if !ok || !isNumber(version) || !isOne(version) {
+		return fmt.Errorf("version must be the numeric literal 1")
+	}
+	for name, def := range fieldDefs {
+		if err := validateFieldDef(name, def); err != nil {
+			return err
+		}
+	}
+	rules, ok := doc["rules"]
+	if !ok {
+		return fmt.Errorf("rules is required")
+	}
+	if err := validateRules(rules); err != nil {
+		return err
+	}
+	if raw, ok := doc["conditions"]; ok {
+		conditions, err := rawObject(raw, "conditions")
+		if err != nil {
+			return err
+		}
+		for name, def := range conditions {
+			if err := validateConditionDef(name, def); err != nil {
+				return err
+			}
+		}
+	}
+	if raw, ok := doc["validators"]; ok {
+		validators, err := rawObject(raw, "validators")
+		if err != nil {
+			return err
+		}
+		for name, def := range validators {
+			if err := validateValidatorDef(name, def, true); err != nil {
+				return err
+			}
+		}
+	}
+	if raw, ok := doc["excluded"]; ok {
+		excluded, err := rawArray(raw, "excluded")
+		if err != nil {
+			return err
+		}
+		for _, def := range excluded {
+			if err := validateExcluded(def); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateFieldDef(name string, raw json.RawMessage) error {
+	def, err := rawObject(raw, "field "+name)
+	if err != nil {
+		return err
+	}
+	if err := closedMembers(def, "field "+name, "required", "default", "isEmpty"); err != nil {
+		return err
+	}
+	if v, ok := def["required"]; ok && !isBool(v) {
+		return fmt.Errorf("field %q required must be boolean", name)
+	}
+	if v, ok := def["default"]; ok && !isPrimitive(v) {
+		return fmt.Errorf("field %q default must be a JSON primitive", name)
+	}
+	if v, ok := def["isEmpty"]; ok {
+		value, ok := stringValue(v)
+		if !ok || !oneOf(value, "string", "number", "boolean", "array", "object", "present") {
+			return fmt.Errorf("field %q isEmpty is invalid", name)
+		}
+	}
+	return nil
+}
+
+func validateConditionDef(name string, raw json.RawMessage) error {
+	def, err := rawObject(raw, "condition "+name)
+	if err != nil {
+		return err
+	}
+	if err := closedMembers(def, "condition "+name, "type", "description"); err != nil {
+		return err
+	}
+	typeName, ok := requiredString(def, "type")
+	if !ok || !oneOf(typeName, "boolean", "string", "number", "string[]", "number[]") {
+		return fmt.Errorf("condition %q has an invalid type", name)
+	}
+	if v, ok := def["description"]; ok && !isString(v) {
+		return fmt.Errorf("condition %q description must be a string", name)
+	}
+	return nil
+}
+
+func validateExcluded(raw json.RawMessage) error {
+	def, err := rawObject(raw, "Excluded")
+	if err != nil {
+		return err
+	}
+	if err := closedMembers(def, "Excluded", "type", "field", "description", "key", "signature"); err != nil {
+		return err
+	}
+	typeName, typeOK := requiredString(def, "type")
+	description, descriptionOK := requiredString(def, "description")
+	if !typeOK || !descriptionOK || typeName == "" || description == "" {
+		return fmt.Errorf("Excluded type and description must be non-empty strings")
+	}
+	for _, key := range []string{"field", "key", "signature"} {
+		if v, ok := def[key]; ok && !isString(v) {
+			return fmt.Errorf("Excluded %s must be a string", key)
+		}
+	}
+	return nil
+}
+
+func validateRules(raw json.RawMessage) error {
+	rules, err := rawArray(raw, "rules")
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules {
+		if err := validateRule(rule); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRule(raw json.RawMessage) error {
+	rule, err := rawObject(raw, "rule")
+	if err != nil {
+		return err
+	}
+	typeName, ok := requiredString(rule, "type")
+	if !ok {
+		return fmt.Errorf("rule type is required")
+	}
+	switch typeName {
+	case "requires":
+		if err := closedMembers(rule, "requires rule", "type", "field", "dependency", "dependencies", "when", "reason"); err != nil {
+			return err
+		}
+		if !hasString(rule, "field") {
+			return fmt.Errorf("requires field is required")
+		}
+		variants := 0
+		if hasString(rule, "dependency") {
+			variants++
+		}
+		if _, present := rule["dependencies"]; present {
+			variants++
+			deps, err := rawArray(rule["dependencies"], "dependencies")
+			if err != nil {
+				return err
+			}
+			if len(deps) == 0 {
+				return fmt.Errorf("dependencies must not be empty")
+			}
+			for _, dep := range deps {
+				if isString(dep) {
+					continue
+				}
+				if err := validateExpr(dep); err != nil {
+					return err
+				}
+			}
+		}
+		if when, present := rule["when"]; present {
+			variants++
+			if err := validateExpr(when); err != nil {
+				return err
+			}
+		}
+		if variants != 1 {
+			return fmt.Errorf("requires rule needs exactly one dependency form")
+		}
+		return optionalReason(rule)
+	case "enabledWhen", "fairWhen":
+		if err := closedMembers(rule, typeName+" rule", "type", "field", "when", "reason"); err != nil {
+			return err
+		}
+		if !hasString(rule, "field") {
+			return fmt.Errorf("%s field is required", typeName)
+		}
+		when, present := rule["when"]
+		if !present {
+			return fmt.Errorf("%s when is required", typeName)
+		}
+		if err := validateExpr(when); err != nil {
+			return err
+		}
+		return optionalReason(rule)
+	case "disables":
+		if err := closedMembers(rule, "disables rule", "type", "source", "when", "targets", "reason"); err != nil {
+			return err
+		}
+		if err := stringArrayMember(rule, "targets", true); err != nil {
+			return err
+		}
+		variants := 0
+		if hasString(rule, "source") {
+			variants++
+		}
+		if when, present := rule["when"]; present {
+			variants++
+			if err := validateExpr(when); err != nil {
+				return err
+			}
+		}
+		if variants != 1 {
+			return fmt.Errorf("disables rule needs source or when")
+		}
+		return optionalReason(rule)
+	case "oneOf", "eitherOf":
+		if err := closedMembers(rule, typeName+" rule", "type", "group", "branches"); err != nil {
+			return err
+		}
+		group, ok := requiredString(rule, "group")
+		if !ok {
+			return fmt.Errorf("%s group is required", typeName)
+		}
+		branchesRaw, present := rule["branches"]
+		if !present {
+			return fmt.Errorf("%s branches is required", typeName)
+		}
+		branches, err := rawObject(branchesRaw, "branches")
+		if err != nil {
+			return err
+		}
+		if typeName == "eitherOf" && len(branches) == 0 {
+			return fmt.Errorf("eitherOf(%q) requires at least one branch", group)
+		}
+		var nestedRules []json.RawMessage
+		for _, branch := range branches {
+			entries, err := rawArray(branch, "branch")
+			if err != nil {
+				return err
+			}
+			if typeName == "eitherOf" && len(entries) == 0 {
+				return fmt.Errorf("branch must not be empty")
+			}
+			for _, entry := range entries {
+				if typeName == "oneOf" {
+					if !isString(entry) {
+						return fmt.Errorf("branch fields must be strings")
+					}
+				} else {
+					if err := validateRule(entry); err != nil {
+						return err
+					}
+					nestedRules = append(nestedRules, entry)
+				}
+			}
+		}
+		if typeName == "eitherOf" {
+			return validateCompositeRules(fmt.Sprintf("eitherOf(%q)", group), nestedRules)
+		}
+		return nil
+	case "anyOf":
+		if err := closedMembers(rule, "anyOf rule", "type", "rules"); err != nil {
+			return err
+		}
+		nested, present := rule["rules"]
+		if !present {
+			return fmt.Errorf("anyOf rules is required")
+		}
+		rules, err := rawArray(nested, "anyOf rules")
+		if err != nil {
+			return err
+		}
+		if len(rules) == 0 {
+			return fmt.Errorf("anyOf rules must not be empty")
+		}
+		for _, nestedRule := range rules {
+			if err := validateRule(nestedRule); err != nil {
+				return err
+			}
+		}
+		return validateCompositeRules("anyOf", rules)
+	case "check":
+		if err := closedMembers(rule, "check rule", "type", "field", "reason", "op", "pattern", "value", "min", "max"); err != nil {
+			return err
+		}
+		if !hasString(rule, "field") {
+			return fmt.Errorf("check field is required")
+		}
+		if err := optionalReason(rule); err != nil {
+			return err
+		}
+		return validateValidatorMap(validatorSpec(rule), false)
+	default:
+		return fmt.Errorf("unsupported rule type %q", typeName)
+	}
+}
+
+type publicRuleConstraint string
+
+const (
+	publicEnabledConstraint publicRuleConstraint = "enabled"
+	publicFairConstraint    publicRuleConstraint = "fair"
+)
+
+func validateCompositeRules(label string, rules []json.RawMessage) error {
+	if len(rules) == 0 {
+		return fmt.Errorf("%s requires at least one rule", label)
+	}
+
+	expectedTargets, expectedConstraint, err := publicRuleShape(rules[0])
+	if err != nil {
+		return err
+	}
+	for _, raw := range rules[1:] {
+		targets, constraint, err := publicRuleShape(raw)
+		if err != nil {
+			return err
+		}
+		if !equalStrings(targets, expectedTargets) {
+			return fmt.Errorf("%s rules must target the same fields", label)
+		}
+		if constraint != expectedConstraint {
+			return fmt.Errorf("%s cannot mix fairness and availability rules", label)
+		}
+	}
+	return nil
+}
+
+func publicRuleShape(raw json.RawMessage) ([]string, publicRuleConstraint, error) {
+	rule, err := rawObject(raw, "rule")
+	if err != nil {
+		return nil, "", err
+	}
+	typeName, ok := requiredString(rule, "type")
+	if !ok {
+		return nil, "", fmt.Errorf("rule type is required")
+	}
+
+	var targets []string
+	constraint := publicEnabledConstraint
+	switch typeName {
+	case "requires", "enabledWhen":
+		field, _ := requiredString(rule, "field")
+		targets = []string{field}
+	case "fairWhen", "check":
+		field, _ := requiredString(rule, "field")
+		targets = []string{field}
+		constraint = publicFairConstraint
+	case "disables":
+		entries, _ := rawArray(rule["targets"], "targets")
+		for _, entry := range entries {
+			field, _ := stringValue(entry)
+			targets = append(targets, field)
+		}
+	case "oneOf":
+		branches, _ := rawObject(rule["branches"], "branches")
+		for _, branch := range branches {
+			entries, _ := rawArray(branch, "branch")
+			for _, entry := range entries {
+				field, _ := stringValue(entry)
+				targets = append(targets, field)
+			}
+		}
+	case "anyOf":
+		rules, _ := rawArray(rule["rules"], "anyOf rules")
+		firstTargets, firstConstraint, err := publicRuleShape(rules[0])
+		if err != nil {
+			return nil, "", err
+		}
+		targets, constraint = firstTargets, firstConstraint
+	case "eitherOf":
+		branches, _ := rawObject(rule["branches"], "branches")
+		for _, branch := range branches {
+			rules, _ := rawArray(branch, "branch")
+			if len(rules) == 0 {
+				continue
+			}
+			firstTargets, firstConstraint, err := publicRuleShape(rules[0])
+			if err != nil {
+				return nil, "", err
+			}
+			targets, constraint = firstTargets, firstConstraint
+			break
+		}
+	default:
+		return nil, "", fmt.Errorf("unsupported rule type %q", typeName)
+	}
+
+	return uniqueSortedStrings(targets), constraint, nil
+}
+
+func uniqueSortedStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateExpr(raw json.RawMessage) error {
+	expr, err := rawObject(raw, "expression")
+	if err != nil {
+		return err
+	}
+	op, ok := requiredString(expr, "op")
+	if !ok {
+		return fmt.Errorf("expression op is required")
+	}
+	switch op {
+	case "eq", "neq":
+		if err := closedMembers(expr, "expression", "op", "field", "value"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") || !isPrimitive(expr["value"]) {
+			return fmt.Errorf("expression %s requires field and primitive value", op)
+		}
+	case "gt", "gte", "lt", "lte":
+		if err := closedMembers(expr, "expression", "op", "field", "value"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") || !isNumber(expr["value"]) {
+			return fmt.Errorf("expression %s requires field and numeric value", op)
+		}
+	case "present", "absent", "truthy", "falsy":
+		if err := closedMembers(expr, "expression", "op", "field"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") {
+			return fmt.Errorf("expression %s requires field", op)
+		}
+	case "in", "notIn":
+		if err := closedMembers(expr, "expression", "op", "field", "values"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") {
+			return fmt.Errorf("expression %s requires field", op)
+		}
+		if err := primitiveArray(expr["values"], "values"); err != nil {
+			return err
+		}
+	case "cond":
+		if err := closedMembers(expr, "expression", "op", "condition"); err != nil {
+			return err
+		}
+		if !hasString(expr, "condition") {
+			return fmt.Errorf("expression cond requires condition")
+		}
+	case "condEq":
+		if err := closedMembers(expr, "expression", "op", "condition", "value"); err != nil {
+			return err
+		}
+		if !hasString(expr, "condition") || !isPrimitive(expr["value"]) {
+			return fmt.Errorf("expression condEq requires condition and primitive value")
+		}
+	case "condIn":
+		if err := closedMembers(expr, "expression", "op", "condition", "values"); err != nil {
+			return err
+		}
+		if !hasString(expr, "condition") {
+			return fmt.Errorf("expression condIn requires condition")
+		}
+		if err := primitiveArray(expr["values"], "values"); err != nil {
+			return err
+		}
+	case "fieldInCond":
+		if err := closedMembers(expr, "expression", "op", "field", "condition"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") || !hasString(expr, "condition") {
+			return fmt.Errorf("expression fieldInCond requires field and condition")
+		}
+	case "and", "or":
+		if err := closedMembers(expr, "expression", "op", "exprs"); err != nil {
+			return err
+		}
+		children, err := rawArray(expr["exprs"], "exprs")
+		if err != nil {
+			return err
+		}
+		for _, child := range children {
+			if err := validateExpr(child); err != nil {
+				return err
+			}
+		}
+	case "not":
+		if err := closedMembers(expr, "expression", "op", "expr"); err != nil {
+			return err
+		}
+		child, present := expr["expr"]
+		if !present {
+			return fmt.Errorf("expression not requires expr")
+		}
+		if err := validateExpr(child); err != nil {
+			return err
+		}
+	case "check":
+		if err := closedMembers(expr, "expression", "op", "field", "check"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") {
+			return fmt.Errorf("expression check requires field")
+		}
+		check, present := expr["check"]
+		if !present {
+			return fmt.Errorf("expression check requires validator")
+		}
+		if err := validateValidatorDef("check", check, false); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unsupported expression op %q", op)
+	}
+	return nil
+}
+
+func validateValidatorDef(name string, raw json.RawMessage, allowError bool) error {
+	def, err := rawObject(raw, "validator "+name)
+	if err != nil {
+		return err
+	}
+	return validateValidatorMap(def, allowError)
+}
+
+func validatorSpec(def map[string]json.RawMessage) map[string]json.RawMessage {
+	spec := make(map[string]json.RawMessage)
+	for _, key := range []string{"op", "pattern", "value", "min", "max", "error"} {
+		if value, ok := def[key]; ok {
+			spec[key] = value
+		}
+	}
+	return spec
+}
+
+func validateValidatorMap(def map[string]json.RawMessage, allowError bool) error {
+	allowed := []string{"op", "pattern", "value", "min", "max"}
+	if allowError {
+		allowed = append(allowed, "error")
+	}
+	if err := closedMembers(def, "validator", allowed...); err != nil {
+		return err
+	}
+	op, ok := requiredString(def, "op")
+	if !ok {
+		return fmt.Errorf("validator op is required")
+	}
+	if allowError {
+		if v, present := def["error"]; present && !isString(v) {
+			return fmt.Errorf("validator error must be a string")
+		}
+	}
+	switch op {
+	case "email", "url", "integer":
+		if len(def) != 1 && !(allowError && len(def) == 2) {
+			return fmt.Errorf("validator %s has invalid members", op)
+		}
+	case "matches":
+		if !hasString(def, "pattern") || len(def) != 2 && !(allowError && len(def) == 3) {
+			return fmt.Errorf("validator matches requires pattern")
+		}
+	case "minLength", "maxLength", "min", "max":
+		if !isNumber(def["value"]) || len(def) != 2 && !(allowError && len(def) == 3) {
+			return fmt.Errorf("validator %s requires value", op)
+		}
+	case "range":
+		if !isNumber(def["min"]) || !isNumber(def["max"]) || len(def) != 3 && !(allowError && len(def) == 4) {
+			return fmt.Errorf("validator range requires min and max")
+		}
+	default:
+		return fmt.Errorf("unsupported validator op %q", op)
+	}
+	return nil
+}
+
+func closedMembers(object map[string]json.RawMessage, context string, allowed ...string) error {
+	for key := range object {
+		if !oneOf(key, allowed...) {
+			return fmt.Errorf("%s has unexpected member %q", context, key)
+		}
+	}
+	return nil
+}
+func rawObject(raw json.RawMessage, context string) (map[string]json.RawMessage, error) {
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return nil, fmt.Errorf("%s must be an object", context)
+	}
+	return value, nil
+}
+func rawArray(raw json.RawMessage, context string) ([]json.RawMessage, error) {
+	var value []json.RawMessage
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return nil, fmt.Errorf("%s must be an array", context)
+	}
+	return value, nil
+}
+func stringValue(raw json.RawMessage) (string, bool) {
+	if len(bytes.TrimSpace(raw)) == 0 || bytes.TrimSpace(raw)[0] != '"' {
+		return "", false
+	}
+	var value string
+	return value, json.Unmarshal(raw, &value) == nil
+}
+func requiredString(object map[string]json.RawMessage, key string) (string, bool) {
+	value, ok := object[key]
+	if !ok {
+		return "", false
+	}
+	return stringValue(value)
+}
+func hasString(object map[string]json.RawMessage, key string) bool {
+	_, ok := requiredString(object, key)
+	return ok
+}
+func isString(raw json.RawMessage) bool { _, ok := stringValue(raw); return ok }
+func isBool(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || (raw[0] != 't' && raw[0] != 'f') {
+		return false
+	}
+	var value bool
+	return json.Unmarshal(raw, &value) == nil
+}
+func isNumber(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || raw[0] == 'n' || raw[0] == '"' || raw[0] == 't' || raw[0] == 'f' {
+		return false
+	}
+	var value float64
+	return json.Unmarshal(raw, &value) == nil
+}
+func isOne(raw json.RawMessage) bool {
+	var value float64
+	return json.Unmarshal(raw, &value) == nil && value == 1
+}
+func isPrimitive(raw json.RawMessage) bool {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return false
+	}
+	switch value.(type) {
+	case nil, string, float64, bool:
+		return true
+	}
+	return false
+}
+func oneOf(value string, allowed ...string) bool {
+	for _, candidate := range allowed {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
+}
+func optionalReason(object map[string]json.RawMessage) error {
+	if raw, ok := object["reason"]; ok && !isString(raw) {
+		return fmt.Errorf("reason must be a string")
+	}
+	return nil
+}
+func stringArrayMember(object map[string]json.RawMessage, key string, required bool) error {
+	raw, ok := object[key]
+	if !ok {
+		if required {
+			return fmt.Errorf("%s is required", key)
+		}
+		return nil
+	}
+	values, err := rawArray(raw, key)
+	if err != nil {
+		return err
+	}
+	for _, value := range values {
+		if !isString(value) {
+			return fmt.Errorf("%s entries must be strings", key)
+		}
+	}
+	return nil
+}
+func primitiveArray(raw json.RawMessage, context string) error {
+	values, err := rawArray(raw, context)
+	if err != nil {
+		return err
+	}
+	for _, value := range values {
+		if !isPrimitive(value) {
+			return fmt.Errorf("%s entries must be JSON primitives", context)
+		}
+	}
+	return nil
+}
+
+func defaultCheckReason(op string, value, min, max *float64) string {
+	switch op {
+	case "email":
+		return "Must be a valid email address"
+	case "url":
+		return "Must be a valid URL"
+	case "integer":
+		return "Must be a whole number"
+	case "matches":
+		return "Must match the required format"
+	case "minLength":
+		if value != nil {
+			return fmt.Sprintf("Must be at least %g characters", *value)
+		}
+	case "maxLength":
+		if value != nil {
+			return fmt.Sprintf("Must be %g characters or fewer", *value)
+		}
+	case "min":
+		if value != nil {
+			return fmt.Sprintf("Must be at least %g", *value)
+		}
+	case "max":
+		if value != nil {
+			return fmt.Sprintf("Must be %g or less", *value)
+		}
+	case "range":
+		if min != nil && max != nil {
+			return fmt.Sprintf("Must be between %g and %g", *min, *max)
+		}
+	}
+	return "Validation failed"
+}
+
 func convertSpecSchema(ss *specSchema, ruleBranchOrder map[int][]string) *Schema {
 	s := &Schema{
 		Fields:     make([]FieldDef, 0, len(ss.Fields)),
@@ -108,7 +856,7 @@ func convertSpecSchema(ss *specSchema, ruleBranchOrder map[int][]string) *Schema
 	sort.Strings(fieldNames)
 	for _, name := range fieldNames {
 		fd := ss.Fields[name]
-		def := FieldDef{Name: name, Required: fd.Required, TypeHint: fd.TypeHint}
+		def := FieldDef{Name: name, Required: fd.Required}
 		if v, ok := fd.IsEmpty.(string); ok {
 			def.IsEmpty = v
 		}
@@ -127,6 +875,15 @@ func convertSpecSchema(ss *specSchema, ruleBranchOrder map[int][]string) *Schema
 
 	for i, rule := range ss.Rules {
 		convertSpecRule(rule, s, ruleBranchOrder[i])
+	}
+	if len(ss.Validators) > 0 {
+		s.Validators = make(map[string]ValidatorDef, len(ss.Validators))
+		for name, validator := range ss.Validators {
+			s.Validators[name] = ValidatorDef{
+				Op: validator.Op, Pattern: validator.Pattern, Value: validator.Value,
+				Min: validator.Min, Max: validator.Max, Error: validator.Error,
+			}
+		}
 	}
 	for _, ex := range ss.Excluded {
 		if ex.Field != "" {
@@ -180,6 +937,25 @@ func convertSpecRule(sr specRuleDef, s *Schema, branchOrder []string) {
 				e.Field = sr.Field
 				r.Check = e
 			}
+		}
+		if sr.Type == "check" && sr.Op != "" {
+			e := &Expr{Op: sr.Op, Field: sr.Field}
+			if r.Reason == "" {
+				r.Reason = defaultCheckReason(sr.Op, sr.Value, sr.Min, sr.Max)
+			}
+			switch sr.Op {
+			case "matches":
+				e.Pattern, e.Value = sr.Pattern, sr.Pattern
+			case "minLength", "maxLength", "min", "max":
+				if sr.Value != nil {
+					e.Value = *sr.Value
+				}
+			case "range":
+				if sr.Min != nil && sr.Max != nil {
+					e.Value = map[string]float64{"min": *sr.Min, "max": *sr.Max}
+				}
+			}
+			r.Check = e
 		}
 		s.Rules = append(s.Rules, r)
 	}

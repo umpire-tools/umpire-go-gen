@@ -231,17 +231,17 @@ type {{ .AvailabilityName }} struct {
 }
 
 // FieldStatus mirrors the conformance expectedAvailability shape exactly.
-// Valid and Error are only populated when a named validator is attached
-// to the field and the field is currently enabled and satisfied.
+// Valid and Error are omitted unless a named validator runs for an enabled,
+// satisfied field.
 type FieldStatus struct {
-	Enabled   bool
-	Required  bool
-	Satisfied bool
-	Fair      bool
-	Reason    *string  // nil when enabled; first blocking reason otherwise
-	Reasons   []string // all blocking reasons; empty slice when enabled
-	Valid     *bool    // nil = no validator; non-nil = validation result
-	Error     string   // non-empty only when Valid != nil && !*Valid
+	Enabled   bool     ` + "`json:\"enabled\"`" + `
+	Required  bool     ` + "`json:\"required\"`" + `
+	Satisfied bool     ` + "`json:\"satisfied\"`" + `
+	Fair      bool     ` + "`json:\"fair\"`" + `
+	Reason    *string  ` + "`json:\"reason\"`" + `
+	Reasons   []string ` + "`json:\"reasons\"`" + `
+	Valid     *bool    ` + "`json:\"valid,omitempty\"`" + `
+	Error     string   ` + "`json:\"error,omitempty\"`" + `
 }
 
 // contains reports whether a string slice contains a given value.

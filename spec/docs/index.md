@@ -4,6 +4,9 @@ hero:
   name: Umpire
   text: Cross-language conformance
   tagline: JSON Schema + fixtures for portable validation rules
+  image:
+    src: /umpire-mark.svg
+    alt: Umpire
   actions:
     - theme: brand
       text: Schema Reference

@@ -425,6 +425,23 @@ func TestCompile_OrOperator(t *testing.T) {
 	}
 }
 
+func TestCompile_EmptyCombinators(t *testing.T) {
+	comp := NewExprCompiler(map[string]GoType{}, map[string]GoType{})
+	for _, test := range []struct {
+		op, want string
+	}{{"and", "true"}, {"or", "false"}} {
+		t.Run(test.op, func(t *testing.T) {
+			got, err := comp.Compile(&schema.Expr{Op: test.op, Exprs: []schema.Expr{}})
+			if err != nil {
+				t.Fatalf("Compile() error: %v", err)
+			}
+			if got != test.want {
+				t.Errorf("Compile() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestCompile_NotOperator(t *testing.T) {
 	comp := NewExprCompiler(
 		map[string]GoType{
