@@ -209,23 +209,51 @@ func TestInferTypes(t *testing.T) {
 }
 
 func TestInferTypesFromNamedValidators(t *testing.T) {
-	s := &schema.Schema{
-		Fields: []schema.FieldDef{{Name: "age"}, {Name: "email"}},
-		Validators: map[string]schema.ValidatorDef{
-			"age":   {Op: "min"},
-			"email": {Op: "email"},
-		},
+	tests := []struct {
+		name     string
+		op       string
+		expected GoType
+	}{
+		{"min", "min", GoFloat64Ptr},
+		{"max", "max", GoFloat64Ptr},
+		{"range", "range", GoFloat64Ptr},
+		{"integer", "integer", GoFloat64Ptr},
+		{"email", "email", GoStringPtr},
+		{"url", "url", GoStringPtr},
+		{"matches", "matches", GoStringPtr},
+		{"minLength", "minLength", GoStringPtr},
+		{"maxLength", "maxLength", GoStringPtr},
 	}
 
-	inferred, err := InferTypes(s)
-	if err != nil {
-		t.Fatalf("InferTypes() error: %v", err)
-	}
-	if inferred.Fields[0].GoType != GoFloat64Ptr {
-		t.Errorf("age GoType = %v, want %v", inferred.Fields[0].GoType, GoFloat64Ptr)
-	}
-	if inferred.Fields[1].GoType != GoStringPtr {
-		t.Errorf("email GoType = %v, want %v", inferred.Fields[1].GoType, GoStringPtr)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator := schema.ValidatorDef{Op: tt.op}
+			switch tt.op {
+			case "min", "max", "minLength", "maxLength":
+				val := 1.0
+				validator.Value = &val
+			case "range":
+				minVal := float64(0)
+				maxVal := float64(100)
+				validator.Min = &minVal
+				validator.Max = &maxVal
+			case "matches":
+				validator.Pattern = ".*"
+			}
+
+			s := &schema.Schema{
+				Fields:     []schema.FieldDef{{Name: "field"}},
+				Validators: map[string]schema.ValidatorDef{"field": validator},
+			}
+
+			inferred, err := InferTypes(s)
+			if err != nil {
+				t.Fatalf("InferTypes() error: %v", err)
+			}
+			if inferred.Fields[0].GoType != tt.expected {
+				t.Errorf("%s GoType = %v, want %v", tt.name, inferred.Fields[0].GoType, tt.expected)
+			}
+		})
 	}
 }
 

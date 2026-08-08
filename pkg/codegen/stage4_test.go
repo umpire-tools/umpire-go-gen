@@ -87,9 +87,138 @@ func TestGenerateWithRules(t *testing.T) {
 		t.Error("generated source missing ruleMeta")
 	}
 
-	// Verify Country has a Required status expression.
-	if !strings.Contains(result.Source, "Required: ") {
-		t.Error("generated source missing Required status expression for country")
+	// Verify Country has a Required status expression gated by CountryEnabled.
+	if !strings.Contains(result.Source, "CountryEnabled :=") {
+		t.Error("generated source missing CountryEnabled declaration")
+	}
+	if !strings.Contains(result.Source, "CountrySatisfied :=") {
+		t.Error("generated source missing CountrySatisfied declaration")
+	}
+	if !strings.Contains(result.Source, "Required: CountryEnabled && true") {
+		t.Error("generated source missing gated Required expression for country")
+	}
+}
+
+func TestGeneratedOneOfSnapshotSelection(t *testing.T) {
+	// Build a schema with a oneOf group containing two string branches.
+	s := &schema.Schema{
+		Fields: []schema.FieldDef{
+			{Name: "creditCard", TypeHint: "string"},
+			{Name: "bankTransfer", TypeHint: "string"},
+		},
+		Conditions: []schema.ConditionDef{},
+		Rules: []schema.Rule{
+			{
+				Type:     "oneOf",
+				Group:    "Payment",
+				Branches: []string{"creditCard", "bankTransfer"},
+			},
+			{
+				Type:   "enabledWhen",
+				Field:  "creditCard",
+				Expr:   &schema.Expr{Op: "present", Field: "creditCard"},
+				Reason: "Credit card payment",
+			},
+			{
+				Type:   "enabledWhen",
+				Field:  "bankTransfer",
+				Expr:   &schema.Expr{Op: "present", Field: "bankTransfer"},
+				Reason: "Bank transfer payment",
+			},
+		},
+	}
+
+	inferred, err := InferTypes(s)
+	if err != nil {
+		t.Fatalf("InferTypes() error: %v", err)
+	}
+
+	gen := NewGenerator("Checkout", "testpkg", "CheckoutFields", "CheckoutConditions", inferred)
+	gen.WithFields(s.Fields)
+	gen.WithRules(s.Rules)
+
+	result, err := gen.Generate()
+	if err != nil {
+		t.Fatalf("Generate() error: %v", err)
+	}
+
+	if result.Source == "" {
+		t.Fatal("generated source is empty")
+	}
+
+	// Write to temp directory as a Go package
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "testpkg"), 0755); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "checkout_gen.go"), []byte(result.Source), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	// Test file exercising the oneOf snapshot-selection logic at runtime.
+	testMain := `package testpkg
+
+import "testing"
+
+func TestOneOfSnapshotSelection(t *testing.T) {
+	// Case 1: both branches satisfied — no prev → first branch wins (creditCard).
+	var f1 CheckoutFields
+	f1.CreditCard = "4111"
+	f1.BankTransfer = "ACC123"
+	avail1 := Check(f1, CheckoutConditions{}, CheckoutFields{})
+
+	if !avail1.CreditCard.Enabled {
+		t.Errorf("creditCard should be enabled when it is the active oneOf branch")
+	}
+	if avail1.BankTransfer.Enabled {
+		t.Errorf("bankTransfer should NOT be enabled (not the active oneOf branch)")
+	}
+	if avail1.ActivePaymentBranch != CreditCard {
+		t.Errorf("expected ActivePaymentBranch == CreditCard, got %v", avail1.ActivePaymentBranch)
+	}
+
+	// Case 2: both branches are satisfied again, but bankTransfer was the only
+	// previously satisfied branch. creditCard is the sole newly satisfied branch
+	// and must win the snapshot-resolution tie-break.
+	var f2 CheckoutFields
+	f2.CreditCard = "4111"
+	f2.BankTransfer = "ACC123"
+
+	var prev CheckoutFields
+	prev.BankTransfer = "ACC123"
+
+	avail2 := Check(f2, CheckoutConditions{}, prev)
+
+	if !avail2.CreditCard.Enabled {
+		t.Errorf("creditCard should be enabled when it is the sole newly-satisfied branch")
+	}
+	if avail2.BankTransfer.Enabled {
+		t.Errorf("bankTransfer should NOT be enabled when creditCard is the newly-satisfied branch")
+	}
+	if avail2.ActivePaymentBranch != CreditCard {
+		t.Errorf("expected ActivePaymentBranch == CreditCard after transition, got %v", avail2.ActivePaymentBranch)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(tmpDir, "testpkg", "checkout_gen_test.go"), []byte(testMain), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	goMod := "module testpkg\ngo 1.22\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cmd := exec.Command("go", "test", "-v", "./...")
+	cmd.Dir = tmpDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go test failed: %v\noutput: %s", err, output)
+	}
+
+	if !strings.Contains(string(output), "PASS") {
+		t.Errorf("expected PASS in test output, got:\n%s", output)
 	}
 }
 
