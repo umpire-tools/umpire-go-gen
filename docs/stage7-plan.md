@@ -25,7 +25,7 @@ pkg/umpiregen : wires root valueSchema types into the generated root Fields,
                 without calling structural validation (chunk 7)
 ```
 
-## Status: all 8 chunks implemented on this branch
+## Status: all 8 chunks implemented on this branch (draft PR). Reviewed via /review; coverage gaps closed; general reviewer agent returned incomplete so a manual review covered the alias-recursion/merge/determinism/compat risk areas (no blocking findings).
 
 ## Chunks (each independently testable, "done when" keeps codegen unit-green)
 
