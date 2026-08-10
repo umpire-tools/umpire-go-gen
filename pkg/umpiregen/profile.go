@@ -3,7 +3,9 @@ package umpiregen
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // ProfileSchemaURI is the required $schema value for a JSON Schema Composition Profile v1.
@@ -209,7 +211,7 @@ func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssu
 	}
 
 	// Recurse into schema-containing keywords.
-	recurseKeys := []string{"items", "contains", "unevaluatedItems", "if", "then", "else"}
+	recurseKeys := []string{"items", "contains", "unevaluatedItems", "if", "then", "else", "unevaluatedProperties"}
 	for _, key := range recurseKeys {
 		if subRaw, ok := obj[key]; ok {
 			issues = append(issues, validatePropertySchema(prefix+"/"+key, subRaw)...)
@@ -279,37 +281,39 @@ func validateOneOf(prefix string, raw json.RawMessage) []DefinitionIssue {
 			continue
 		}
 
-		foundDiscriminator := ""
+		var required []string
+		_ = json.Unmarshal(branch["required"], &required)
+		requiredSet := make(map[string]bool, len(required))
+		for _, r := range required {
+			requiredSet[r] = true
+		}
+
 		hasInvalidConst := false
+		var discriminators []string
 		for propName, propRaw := range props {
 			var propObj map[string]json.RawMessage
 			if json.Unmarshal(propRaw, &propObj) != nil {
 				continue
 			}
-			if constRaw, ok := propObj["const"]; ok {
-				var constVal string
-				if json.Unmarshal(constRaw, &constVal) != nil {
-					hasInvalidConst = true
-					continue
-				}
-				if reqRaw, ok := branch["required"]; ok {
-					var req []string
-					if json.Unmarshal(reqRaw, &req) == nil {
-						for _, r := range req {
-							if r == propName {
-								foundDiscriminator = propName
-								break
-							}
-						}
-					}
-				}
-				if foundDiscriminator != "" {
-					break
-				}
+			constRaw, hasConst := propObj["const"]
+			if !hasConst {
+				continue
+			}
+			var constVal string
+			if json.Unmarshal(constRaw, &constVal) != nil {
+				hasInvalidConst = true
+				continue
+			}
+			// Track every required property carrying a string const (not just the
+			// first) so discriminator detection is deterministic regardless of map
+			// iteration order. A tagged union requires exactly one discriminator.
+			if requiredSet[propName] {
+				discriminators = append(discriminators, propName)
 			}
 		}
+		sort.Strings(discriminators)
 
-		if hasInvalidConst {
+		if hasInvalidConst || len(discriminators) != 1 {
 			branchIssues = append(branchIssues, DefinitionIssue{
 				Code: "invalidDiscriminator",
 				Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix),
@@ -318,8 +322,8 @@ func validateOneOf(prefix string, raw json.RawMessage) []DefinitionIssue {
 		}
 
 		if i == 0 {
-			commonDiscriminator = foundDiscriminator
-		} else if foundDiscriminator != commonDiscriminator {
+			commonDiscriminator = discriminators[0]
+		} else if discriminators[0] != commonDiscriminator {
 			branchIssues = append(branchIssues, DefinitionIssue{
 				Code: "invalidDiscriminator",
 				Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix),
@@ -381,8 +385,8 @@ func extractRefTargets(raw json.RawMessage) []string {
 		}
 	}
 
-	// Recurse into contains, unevaluatedItems, if, then, else.
-	for _, key := range []string{"contains", "unevaluatedItems", "if", "then", "else"} {
+	// Recurse into contains, unevaluatedItems, if, then, else, unevaluatedProperties.
+	for _, key := range []string{"contains", "unevaluatedItems", "if", "then", "else", "unevaluatedProperties"} {
 		if subRaw, ok := obj[key]; ok {
 			targets = append(targets, extractRefTargets(subRaw)...)
 		}
@@ -511,6 +515,8 @@ func checkIsEmptyCompatibility(fieldName, isEmpty, schemaType string) *Definitio
 			return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", fieldName)}
 		}
 	case "present":
+		// "present" is the portable no-emptiness strategy (spec rule 5 only
+		// constrains non-present strategies), so it is compatible with any type.
 	}
 	return nil
 }
@@ -526,10 +532,13 @@ func checkDefaultCompatibility(fieldName string, defaultRaw json.RawMessage, pro
 		if !ok {
 			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
 		}
-		if prop.MinLen != nil && float64(len(v)) < *prop.MinLen {
+		// JSON Schema minLength/maxLength are measured in Unicode code points, so
+		// count runes rather than bytes to avoid false rejects for multi-byte chars.
+		n := utf8.RuneCountInString(v)
+		if prop.MinLen != nil && float64(n) < *prop.MinLen {
 			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
 		}
-		if prop.MaxLen != nil && float64(len(v)) > *prop.MaxLen {
+		if prop.MaxLen != nil && float64(n) > *prop.MaxLen {
 			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
 		}
 	case "integer":

@@ -927,6 +927,250 @@ func TestParseProfile_RefInOneOfCycleDetection(t *testing.T) {
 	assertHasIssue(t, result.Issues, "referenceCycle", "/valueSchema/$defs/B")
 }
 
+// TestParseProfile_ExcludedKeywordUnevaluatedProperties recurses into
+// unevaluatedProperties to detect excluded keywords in its subschema.
+func TestParseProfile_ExcludedKeywordUnevaluatedProperties(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"extra": {
+					"type": "object",
+					"unevaluatedProperties": { "allOf": [{ "type": "string" }] }
+				}
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"extra": { "isEmpty": "object" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties/allOf")
+}
+
+// TestParseProfile_DefaultBooleanMismatch checks that a non-boolean default for a
+// boolean property triggers invalidDefault.
+func TestParseProfile_DefaultBooleanMismatch(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"enabled": { "type": "boolean" }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"enabled": { "isEmpty": "boolean", "default": "true" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/enabled/default")
+}
+
+// TestParseProfile_DefaultMaxLength checks that a string default exceeding maxLength
+// triggers invalidDefault.
+func TestParseProfile_DefaultMaxLength(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"name": { "type": "string", "maxLength": 3 }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"name": { "isEmpty": "string", "default": "toolong" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/name/default")
+}
+
+// TestParseProfile_DefaultMaxLengthMultibyte checks that maxLength counts Unicode
+// code points, not bytes, so a multi-byte string at the limit stays valid.
+func TestParseProfile_DefaultMaxLengthMultibyte(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"name": { "type": "string", "maxLength": 2 }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"name": { "isEmpty": "string", "default": "\u00e9\u00e9" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	if len(result.Issues) > 0 {
+		t.Fatalf("expected no issues for 2-rune default with maxLength 2, got: %v", result.Issues)
+	}
+}
+
+// TestParseProfile_OneOfBranchMissingProperties checks that a oneOf branch lacking
+// a properties key triggers invalidDiscriminator.
+func TestParseProfile_OneOfBranchMissingProperties(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"flag": {
+					"oneOf": [
+						{ "type": "string" },
+						{ "type": "object", "properties": { "kind": { "const": "x" } }, "required": ["kind"], "additionalProperties": false }
+					]
+				}
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"flag": { "isEmpty": "present" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidDiscriminator", "/valueSchema/properties/flag/oneOf")
+}
+
+// TestParseProfile_OneOfMultipleDiscriminators checks that a branch with more than
+// one required string-const property is rejected as an ambiguous discriminator.
+func TestParseProfile_OneOfMultipleDiscriminators(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"cmd": {
+					"oneOf": [
+						{
+							"type": "object",
+							"properties": { "kind": { "const": "run" }, "sub": { "const": "a" } },
+							"required": ["kind", "sub"],
+							"additionalProperties": false
+						},
+						{
+							"type": "object",
+							"properties": { "kind": { "const": "stop" }, "sub": { "const": "b" } },
+							"required": ["kind", "sub"],
+							"additionalProperties": false
+						}
+					]
+				}
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"cmd": { "isEmpty": "present" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidDiscriminator", "/valueSchema/properties/cmd/oneOf")
+}
+
+// TestParseProfile_IsEmptyPresentAnyType checks that the "present" isEmpty strategy
+// is compatible with any structural type (spec rule 5 constrains non-present only).
+func TestParseProfile_IsEmptyPresentAnyType(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"count": { "type": "integer" }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"count": { "isEmpty": "present" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	if len(result.Issues) > 0 {
+		t.Fatalf("expected no issues for present strategy on integer, got: %v", result.Issues)
+	}
+}
+
 // TestComposedMode_OutputDirFromProfile checks that profile mode name defaults work.
 func TestComposedMode_OutputDirFromProfile(t *testing.T) {
 	umpireJSON := []byte(`{"version":1,"fields":{"x":{"isEmpty":"string"}},"rules":[]}`)
