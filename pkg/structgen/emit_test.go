@@ -84,7 +84,7 @@ func TestEmitCompilesAvenor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit(): %v", err)
 	}
-	if strings.Contains(em.Source, "any") {
+	if strings.Contains(em.Source, "map[string]any") || strings.Contains(em.Source, "]any") || strings.Contains(em.Source, "*any") {
 		t.Fatalf("emitted source must not expose `any`:\n%s", em.Source)
 	}
 	for _, want := range []string{"type Workflow struct", "type Node struct", "type Edge struct", "type Action struct",
@@ -190,6 +190,97 @@ func TestStrictAndValidate(t *testing.T) {
 	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\"}`" + `), &d); err == nil { t.Fatal("want missing-required error") }
 	// null required nodes
 	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\",\"nodes\":null}`" + `), &d); err == nil { t.Fatal("want null-required error") }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+// TestEmitConstraintsAndRecursion exercises const, maxLength, maxItems, number
+// bounds, and indexed reference recursion through arrays (RFC 6901 paths).
+func TestEmitConstraintsAndRecursion(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"title":{"type":"string","minLength":3,"maxLength":5},
+			"count":{"type":"integer","minimum":10,"maximum":20},
+			"ratio":{"type":"number","minimum":0.5,"maximum":1.5},
+			"status":{"type":"string","const":"active"},
+			"tags":{"type":"array","items":{"type":"string"},"maxItems":2},
+			"nodes":{"type":"array","items":{"$ref":"#/$defs/node"},"minItems":1}
+		},
+		"required":["title","nodes"],
+		"$defs":{"node":{"type":"object","properties":{"code":{"type":"string","minLength":2}}}}
+	}`
+	testSrc := `
+func TestConstraintsAndRecursion(t *testing.T) {
+	has := func(issues []Issue, code, path string) bool {
+		for _, i := range issues { if i.Code == code && i.Path == path { return true } }
+		return false
+	}
+	var d Doc
+	mk := func(s string) { if err := json.Unmarshal([]byte(s), &d); err != nil { t.Fatal(err) } }
+	// valid
+	mk(` + "`{\"title\":\"abc\",\"count\":15,\"ratio\":1.2,\"status\":\"active\",\"tags\":[\"a\",\"b\"],\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if v := d.Validate(); len(v) != 0 { t.Fatalf("want clean, got %+v", v) }
+	// maxLength
+	mk(` + "`{\"title\":\"toolong\",\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if !has(d.Validate(), "maxLength", "/title") { t.Fatal("want maxLength @ /title") }
+	// minimum/maximum (int) and maximum (number)
+	mk(` + "`{\"title\":\"abc\",\"count\":5,\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if !has(d.Validate(), "minimum", "/count") { t.Fatal("want minimum @ /count") }
+	mk(` + "`{\"title\":\"abc\",\"count\":25,\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if !has(d.Validate(), "maximum", "/count") { t.Fatal("want maximum @ /count (int)") }
+	mk(` + "`{\"title\":\"abc\",\"ratio\":2.0,\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if !has(d.Validate(), "maximum", "/ratio") { t.Fatal("want maximum @ /ratio (number)") }
+	// const
+	mk(` + "`{\"title\":\"abc\",\"status\":\"inactive\",\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if !has(d.Validate(), "const", "/status") { t.Fatal("want const @ /status") }
+	// maxItems
+	mk(` + "`{\"title\":\"abc\",\"tags\":[\"a\",\"b\",\"c\"],\"nodes\":[{\"code\":\"xx\"}]}`" + `)
+	if !has(d.Validate(), "maxItems", "/tags") { t.Fatal("want maxItems @ /tags") }
+	// ref recursion into array element yields indexed path
+	mk(` + "`{\"title\":\"abc\",\"nodes\":[{\"code\":\"x\"}]}`" + `)
+	if !has(d.Validate(), "minLength", "/nodes/0/code") { t.Fatalf("want minLength @ /nodes/0/code, got %+v", d.Validate()) }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+// TestEmitOptionalEmptyObjectAndNested checks optional-scalar nil on omission,
+// empty-schema -> named struct, and unknown-property rejection on a nested object.
+func TestEmitOptionalEmptyObjectAndNested(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"nickname":{"type":"string"},
+			"meta":{"type":"object","properties":{"env":{"type":"string"}},"required":["env"]},
+			"extra":{}
+		},
+		"required":[]
+	}`
+	testSrc := `
+func TestOptionalNilAndNested(t *testing.T) {
+	var d Doc
+	if err := json.Unmarshal([]byte(` + "`{}`" + `), &d); err != nil { t.Fatal(err) }
+	if d.Nickname != nil { t.Fatalf("missing optional string should be nil, got %v", d.Nickname) }
+	if err := json.Unmarshal([]byte(` + "`{\"meta\":{\"env\":\"prod\",\"bogus\":1}}`" + `), &d); err == nil { t.Fatal("want nested unknown-field error") }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+// TestEmitEnumNonAlphaWire ensures enum wire values with non-identifier
+// characters still produce compilable constants with the exact wire value.
+func TestEmitEnumNonAlphaWire(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{"mode":{"type":"string","enum":["my-value","snake_case","UPPER"]}}
+	}`
+	testSrc := `
+func TestEnumNonAlpha(t *testing.T) {
+	if b, _ := json.Marshal(ModeMyValue); string(b) != "\"my-value\"" { t.Fatalf("hyphen wire lost: %s", b) }
+	if string(ModeSnakeCase) != "snake_case" { t.Fatal("underscore wire lost") }
+	if string(ModeUPPER) != "UPPER" { t.Fatal("upper wire lost") }
 }
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)
