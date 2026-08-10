@@ -226,6 +226,7 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	}
 
 	discriminator := ""
+	var discConsts []string
 	for _, brRaw := range oneOf {
 		var br map[string]json.RawMessage
 		if err := json.Unmarshal(brRaw, &br); err != nil || !hasNode(br, "properties") {
@@ -251,10 +252,25 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 				}
 			}
 		}
+		// Record this branch's discriminator const value.
+		if d, ok := discConst(props, discriminator); ok {
+			discConsts = append(discConsts, d)
+		}
 	}
 	if discriminator == "" {
 		return FieldType{}, fmt.Errorf("oneOf union %q has no required string discriminator", hint)
 	}
+
+	// The discriminator becomes a named enum type (e.g. ActionKind) built from the
+	// union's branch const values.
+	enumName := hint + "Kind"
+	enumT := TypeDef{Name: enumName, Kind: KindEnum, JSONName: hint}
+	for _, v := range uniqueSorted(discConsts) {
+		enumT.Values = append(enumT.Values, EnumValue{Name: codegen.GoFieldName(v), Wire: v})
+	}
+	enumIdx := b.register(enumT)
+	b.types[enumIdx] = enumT
+	fieldType[discriminator] = FieldType{Kind: KindEnum, Ref: enumName}
 
 	td := TypeDef{Name: hint, Kind: KindUnion, JSONName: hint, Discriminator: discriminator}
 	for _, n := range fieldOrder {
@@ -269,6 +285,43 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	idx := b.register(td)
 	b.types[idx] = td
 	return FieldType{Kind: KindUnion, Ref: hint}, nil
+}
+
+// discConst returns the string const value of the named discriminator property
+// within a branch's properties, if present.
+func discConst(props map[string]json.RawMessage, goName string) (string, bool) {
+	for propName, raw := range props {
+		if codegen.GoFieldName(propName) != goName {
+			continue
+		}
+		var node map[string]json.RawMessage
+		if json.Unmarshal(raw, &node) != nil {
+			return "", false
+		}
+		c, ok := node["const"]
+		if !ok {
+			return "", false
+		}
+		var s string
+		if json.Unmarshal(c, &s) != nil {
+			return "", false
+		}
+		return s, true
+	}
+	return "", false
+}
+
+func uniqueSorted(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range in {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // attachConstraints copies validation-relevant keywords from a property schema
