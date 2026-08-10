@@ -88,6 +88,17 @@ func specNeedsImports(spec *Spec) (strconv, utf8 bool) {
 	return
 }
 
+// RootGoTypes returns the emitted Go field type for each root field, keyed by
+// original JSON name. Used by the profile path to surface structural root types
+// in the existing availability Fields struct.
+func RootGoTypes(spec *Spec) map[string]string {
+	out := make(map[string]string, len(spec.Root))
+	for _, f := range spec.Root {
+		out[f.Name] = fieldGoType(f)
+	}
+	return out
+}
+
 // baseGoType renders the non-nullable Go type string for a field type.
 func baseGoType(ft FieldType) string {
 	switch ft.Kind {

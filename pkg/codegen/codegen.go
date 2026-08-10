@@ -21,6 +21,11 @@ type Generator struct {
 	allSchema        *schema.Schema    // full schema for accessing BranchExpressions
 	hasStrings       bool
 	hasStrconv       bool
+	// Overrides, when set, replace the inferred GoType for matching field names
+	// (keyed by original JSON field name). Used by the profile path to surface
+	// structural valueSchema types in the availability Fields struct. Empty by
+	// default so the availability-only path is byte-for-byte unchanged.
+	Overrides map[string]GoType
 }
 
 // NewGenerator creates a Generator for the given schema and config.
@@ -46,6 +51,13 @@ func (g *Generator) WithRules(rules []schema.Rule) *Generator {
 // WithFields sets the original field definitions (for Required/IsEmpty).
 func (g *Generator) WithFields(fields []schema.FieldDef) *Generator {
 	g.allFields = fields
+	return g
+}
+
+// WithFieldTypeOverrides sets explicit GoTypes for named fields, overriding
+// type inference. Provide nil/empty to keep inference for all fields.
+func (g *Generator) WithFieldTypeOverrides(overrides map[string]GoType) *Generator {
+	g.Overrides = overrides
 	return g
 }
 
@@ -83,6 +95,15 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		fieldTypes[ft.Name] = ft.GoType
 	}
 
+	// Honor explicit structural type overrides for the availability Fields.
+	fieldsTypeInfo := g.Inferred.Fields
+	if len(g.Overrides) > 0 {
+		fieldsTypeInfo = applyTypeOverrides(g.Inferred.Fields, g.Overrides)
+		fieldTypes = make(map[string]GoType, len(fieldsTypeInfo))
+		for _, ft := range fieldsTypeInfo {
+			fieldTypes[ft.Name] = ft.GoType
+		}
+	}
 	condTypes := make(map[string]GoType)
 	for _, ct := range g.Inferred.Conditions {
 		condTypes[ct.Name] = ct.GoType
@@ -115,7 +136,7 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 			IsOneOf:  isOneOf,
 		})
 	}
-	checkGen := NewCheckGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData, oneOfGroups)
+	checkGen := NewCheckGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, fieldsTypeInfo, ruleData, oneOfGroups)
 	checkGen.WithExprCompiler(NewExprCompiler(fieldTypes, condTypes))
 	helper, checkBody := checkGen.Generate()
 
@@ -128,7 +149,7 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		FieldsName:       g.FieldsName,
 		ConditionsName:   g.ConditionsName,
 		AvailabilityName: g.AvailabilityName,
-		Fields:           g.Inferred.Fields,
+		Fields:           fieldsTypeInfo,
 		Conditions:       g.Inferred.Conditions,
 		Branches:         g.Inferred.Branches,
 		BranchGroups:     branchGroups,
@@ -147,6 +168,19 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 	}
 
 	return &GenerateResult{Source: buf.String()}, nil
+}
+
+// applyTypeOverrides returns a copy of the field info slice with GoTypes for the
+// given field names replaced by the overrides. Fields not in the map are unchanged.
+func applyTypeOverrides(fields []FieldTypeInfo, overrides map[string]GoType) []FieldTypeInfo {
+	out := make([]FieldTypeInfo, len(fields))
+	copy(out, fields)
+	for i := range out {
+		if t, ok := overrides[out[i].Name]; ok {
+			out[i].GoType = t
+		}
+	}
+	return out
 }
 
 // generationTemplateData is the data passed to the Go template.

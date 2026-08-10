@@ -113,7 +113,13 @@ func (g *CheckGenerator) genHelper() string {
 				b.WriteString(gn)
 				b.WriteString(") > 0\n")
 			default:
-				b.WriteString("		return true\n")
+				if strings.HasPrefix(string(goType), "[]") {
+					b.WriteString("		return len(f.")
+					b.WriteString(gn)
+					b.WriteString(") > 0\n")
+				} else {
+					b.WriteString("		return true\n")
+				}
 			}
 		}
 	}
@@ -516,6 +522,14 @@ func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, goType GoT
 		b.WriteString("true")
 		return
 	}
+	// Any slice-typed field (including named structural element types like
+	// []Node) is satisfied when non-empty.
+	if strings.HasPrefix(string(goType), "[]") {
+		b.WriteString("len(f.")
+		b.WriteString(gn)
+		b.WriteString(") > 0")
+		return
+	}
 	switch goType {
 	case GoStringSlice, GoFloat64Slice:
 		b.WriteString("len(f.")
@@ -821,6 +835,10 @@ func (g *CheckGenerator) fieldSatisfiedExpr(goName string) string {
 		case GoString:
 			return fmt.Sprintf("f.%s != \"\"", goName)
 		default:
+			// Named slice element types (e.g. []Node) are satisfied when non-empty.
+			if strings.HasPrefix(string(ft.GoType), "[]") {
+				return fmt.Sprintf("len(f.%s) > 0", goName)
+			}
 			return "true"
 		}
 	}

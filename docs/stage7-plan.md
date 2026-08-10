@@ -5,7 +5,7 @@ Branch: `feat/json-spec-gen`. Builds on merged Stage 6 (profile + valueSchema va
 ## Architecture
 
 New package `pkg/structgen` owns the valueSchema-driven structural codegen. It is
-fee-only invoked when a profile supplies a valueSchema (chunk 8: no valueSchema ⇒
+only invoked when a profile supplies a valueSchema (chunk 8: no valueSchema ⇒
 output unchanged, existing availability-only path preserved).
 
 ```
@@ -24,6 +24,8 @@ pkg/umpiregen : wires root valueSchema types into the generated root Fields,
                 and generates availability Check()/Challenge() over richer types
                 without calling structural validation (chunk 7)
 ```
+
+## Status: all 8 chunks implemented on this branch
 
 ## Chunks (each independently testable, "done when" keeps codegen unit-green)
 
