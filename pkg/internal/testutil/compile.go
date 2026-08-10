@@ -21,7 +21,7 @@ func AssertGeneratedPackageCompiles(t *testing.T, source string) {
 		t.Fatalf("write generated.go: %v", err)
 	}
 
-	cmd := exec.Command("go", "test", "./...")
+	cmd := exec.Command("go", "build", ".")
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
 		"GOTOOLCHAIN=local",

@@ -116,8 +116,86 @@ func TestParseFlags_DefaultOutputFile(t *testing.T) {
 func TestParseFlags_MissingRequiredInput(t *testing.T) {
 	_, err := ParseFlags([]string{"-pkg", "myschema"})
 	if err == nil {
-		t.Fatal("expected error for missing -i flag, got nil")
+		t.Fatal("expected error for missing input, got nil")
 	}
+}
+
+func TestParseFlags_ProfileMode(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-profile", "my.profile.json", "-pkg", "profilepkg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode != ModeProfile {
+		t.Errorf("Mode = %d, want ModeProfile (%d)", cfg.Mode, ModeProfile)
+	}
+	if cfg.ProfilePath != "my.profile.json" {
+		t.Errorf("ProfilePath = %q, want %q", cfg.ProfilePath, "my.profile.json")
+	}
+}
+
+func TestParseFlags_ComposedMode(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-i", "umpire.json", "-value-schema", "schema.json", "-pkg", "composedpkg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Mode != ModeComposed {
+		t.Errorf("Mode = %d, want ModeComposed (%d)", cfg.Mode, ModeComposed)
+	}
+	if cfg.InputPath != "umpire.json" {
+		t.Errorf("InputPath = %q, want %q", cfg.InputPath, "umpire.json")
+	}
+	if cfg.ValueSchemaPath != "schema.json" {
+		t.Errorf("ValueSchemaPath = %q, want %q", cfg.ValueSchemaPath, "schema.json")
+	}
+}
+
+func TestParseFlags_ProfileAndInputRejected(t *testing.T) {
+	_, err := ParseFlags([]string{"-i", "umpire.json", "-profile", "profile.json", "-pkg", "pkg"})
+	if err == nil || !contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous error, got: %v", err)
+	}
+}
+
+func TestParseFlags_ProfileAndValueSchemaRejected(t *testing.T) {
+	_, err := ParseFlags([]string{"-profile", "p.json", "-value-schema", "vs.json", "-pkg", "pkg"})
+	if err == nil || !contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous error, got: %v", err)
+	}
+}
+
+func TestParseFlags_ValueSchemaWithoutInputRejected(t *testing.T) {
+	_, err := ParseFlags([]string{"-value-schema", "vs.json", "-pkg", "pkg"})
+	if err == nil || !contains(err.Error(), "requires -i") {
+		t.Fatalf("expected error about -i requirement, got: %v", err)
+	}
+}
+
+func TestParseFlags_ProfileDefaultsName(t *testing.T) {
+	cfg, err := ParseFlags([]string{"-profile", "checkout.profile.json", "-pkg", "pkg"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// From "checkout.profile.json", baseName strips .json suffix -> "checkout.profile" -> "CheckoutProfile".
+	if cfg.SchemaName != "CheckoutProfile" {
+		t.Errorf("SchemaName = %q, want %q", cfg.SchemaName, "CheckoutProfile")
+	}
+	if cfg.FieldsName != "CheckoutProfileFields" {
+		t.Errorf("FieldsName = %q, want %q", cfg.FieldsName, "CheckoutProfileFields")
+	}
+}
+
+// contains is a helper for substring matching.
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && containsStr(s, substr)
+}
+
+func containsStr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 func TestParseFlags_MissingRequiredPkg(t *testing.T) {

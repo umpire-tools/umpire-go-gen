@@ -112,6 +112,167 @@ func TestGenerateNoRulesCompiles(t *testing.T) {
 	testutil.AssertGeneratedPackageCompiles(t, source)
 }
 
+func TestGenerateProfile_ValidInline(t *testing.T) {
+	profileJSON := []byte(`{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"email": { "type": "string" },
+				"password": { "type": "string" }
+			},
+			"required": ["email"],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"email": { "required": true, "isEmpty": "string" },
+				"password": { "isEmpty": "string" }
+			},
+			"rules": []
+		}
+	}`)
+
+	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "profile", SchemaName: "ProfileTest"})
+	if err != nil {
+		t.Fatalf("GenerateProfile() error: %v", err)
+	}
+	if len(issues) > 0 {
+		t.Fatalf("expected no definition issues, got: %v", issues)
+	}
+	if !strings.Contains(source, "type ProfileTestFields struct") {
+		t.Fatalf("generated source missing struct:\n%s", source)
+	}
+	testutil.AssertGeneratedPackageCompiles(t, source)
+}
+
+func TestGenerateProfile_ReturnsIssues(t *testing.T) {
+	// Profile with an excluded keyword should return issues but still generate code.
+	profileJSON := []byte(`{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"x": { "allOf": [{ "type": "string" }] }
+			},
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": { "x": { "isEmpty": "string" } },
+			"rules": []
+		}
+	}`)
+
+	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "issues", SchemaName: "IssuesTest"})
+	if err != nil {
+		t.Fatalf("GenerateProfile() error: %v", err)
+	}
+	if len(issues) == 0 {
+		t.Fatal("expected definition issues, got none")
+	}
+	if source == "" {
+		t.Fatal("expected source even with issues")
+	}
+}
+
+func TestGenerateProfile_InvalidJSON(t *testing.T) {
+	_, _, err := GenerateProfile([]byte(`{invalid}`), Config{PkgName: "x", SchemaName: "X"})
+	if err == nil || !strings.Contains(err.Error(), "parse profile") {
+		t.Fatalf("expected parse profile error, got: %v", err)
+	}
+}
+
+func TestGenerateComposed_Valid(t *testing.T) {
+	umpireJSON := []byte(`{
+		"version": 1,
+		"fields": { "title": { "isEmpty": "string", "required": true } },
+		"rules": []
+	}`)
+	valueSchemaJSON := []byte(`{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "object",
+		"properties": { "title": { "type": "string" } },
+		"additionalProperties": false
+	}`)
+
+	source, issues, err := GenerateComposed(umpireJSON, valueSchemaJSON, Config{PkgName: "composed", SchemaName: "Composed"})
+	if err != nil {
+		t.Fatalf("GenerateComposed() error: %v", err)
+	}
+	if len(issues) > 0 {
+		t.Fatalf("expected no issues, got: %v", issues)
+	}
+	if !strings.Contains(source, "type ComposedFields struct") {
+		t.Fatalf("generated source missing struct:\n%s", source)
+	}
+	testutil.AssertGeneratedPackageCompiles(t, source)
+}
+
+func TestGenerateComposed_MissingValueSchema(t *testing.T) {
+	_, _, err := GenerateComposed([]byte(`{"version":1,"fields":{},"rules":[]}`), nil, Config{PkgName: "x", SchemaName: "X"})
+	if err == nil || !strings.Contains(err.Error(), "value-schema is required") {
+		t.Fatalf("expected value-schema error, got: %v", err)
+	}
+}
+
+func TestGenerateComposed_ReturnsIssues(t *testing.T) {
+	// Composed mode with an excluded keyword should propagate definition issues.
+	umpireJSON := []byte(`{
+		"version": 1,
+		"fields": { "x": { "isEmpty": "string" } },
+		"rules": []
+	}`)
+	valueSchemaJSON := []byte(`{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"type": "object",
+		"properties": {
+			"x": { "not": { "type": "string" } }
+		},
+		"additionalProperties": false
+	}`)
+
+	_, issues, err := GenerateComposed(umpireJSON, valueSchemaJSON, Config{PkgName: "issues", SchemaName: "IssuesComposed"})
+	if err != nil {
+		t.Fatalf("GenerateComposed() error: %v", err)
+	}
+	if len(issues) == 0 {
+		t.Fatal("expected definition issues from composed profile, got none")
+	}
+	foundUnsupportedKeyword := false
+	for _, iss := range issues {
+		if iss.Code == "unsupportedKeyword" {
+			foundUnsupportedKeyword = true
+			break
+		}
+	}
+	if !foundUnsupportedKeyword {
+		t.Fatalf("expected unsupportedKeyword issue in issues: %+v", issues)
+	}
+}
+
+func TestGenerate_ExistingBehaviorUnchanged(t *testing.T) {
+	// Existing Generate calls must still work identically.
+	source, err := Generate([]byte(`{
+		"version": 1,
+		"fields": { "email": { "required": true } },
+		"conditions": {},
+		"rules": []
+	}`), Config{PkgName: "existing", SchemaName: "Existing"})
+	if err != nil {
+		t.Fatalf("Generate() error: %v", err)
+	}
+	if !strings.Contains(source, "type ExistingFields struct") {
+		t.Fatalf("generated source missing struct:\n%s", source)
+	}
+	testutil.AssertGeneratedPackageCompiles(t, source)
+}
+
 func TestGenerateTruthyAndNumericChecksCompile(t *testing.T) {
 	cases := []struct {
 		name string

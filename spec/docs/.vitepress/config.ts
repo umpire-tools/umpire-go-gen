@@ -11,6 +11,7 @@ export default defineConfig({
     appearance: 'dark',
     nav: [
       { text: 'Schema Reference', link: '/schema' },
+      { text: 'JSON Schema Profile', link: '/profiles' },
       { text: 'Integrating', link: '/integrating' },
       { text: 'GitHub', link: 'https://github.com/umpire-tools/umpire-spec' },
     ],
@@ -19,6 +20,7 @@ export default defineConfig({
         text: 'Spec',
         items: [
           { text: 'Schema Reference', link: '/schema' },
+          { text: 'JSON Schema Profile', link: '/profiles' },
           { text: 'Integrating a Port', link: '/integrating' },
         ],
       },
