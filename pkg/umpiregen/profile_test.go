@@ -961,6 +961,45 @@ func TestParseProfile_ExcludedKeywordUnevaluatedProperties(t *testing.T) {
 	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties/allOf")
 }
 
+// TestParseProfile_ExcludedKeywordUnevaluatedPropertiesNested checks that
+// unevaluatedProperties recursion reaches deeper nesting levels.
+func TestParseProfile_ExcludedKeywordUnevaluatedPropertiesNested(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"extra": {
+					"type": "object",
+					"unevaluatedProperties": {
+						"type": "object",
+						"properties": {
+							"nested": { "unevaluatedProperties": { "allOf": [{ "type": "string" }] } }
+						}
+					}
+				}
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"extra": { "isEmpty": "object" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties/properties/nested/unevaluatedProperties/allOf")
+}
+
 // TestParseProfile_DefaultBooleanMismatch checks that a non-boolean default for a
 // boolean property triggers invalidDefault.
 func TestParseProfile_DefaultBooleanMismatch(t *testing.T) {
@@ -990,6 +1029,102 @@ func TestParseProfile_DefaultBooleanMismatch(t *testing.T) {
 		t.Fatalf("ParseProfile() error: %v", err)
 	}
 	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/enabled/default")
+}
+
+// TestParseProfile_DefaultBoolean checks that a valid boolean default passes cleanly.
+func TestParseProfile_DefaultBoolean(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"enabled": { "type": "boolean" }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"enabled": { "isEmpty": "boolean", "default": true }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	if len(result.Issues) > 0 {
+		t.Fatalf("expected no issues for valid boolean default, got: %v", result.Issues)
+	}
+}
+
+// TestParseProfile_DefaultMaxLengthBoundary checks that a string default exactly at
+// the maxLength limit is accepted.
+func TestParseProfile_DefaultMaxLengthBoundary(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"name": { "type": "string", "maxLength": 3 }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"name": { "isEmpty": "string", "default": "abc" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	if len(result.Issues) > 0 {
+		t.Fatalf("expected no issues for default at maxLength boundary, got: %v", result.Issues)
+	}
+}
+
+// TestParseProfile_DefaultMaxLengthMultibyteOvershoot checks that a multi-byte string
+// whose rune count exceeds maxLength triggers invalidDefault.
+func TestParseProfile_DefaultMaxLengthMultibyteOvershoot(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"name": { "type": "string", "maxLength": 2 }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"name": { "isEmpty": "string", "default": "\u00e9\u00e9\u00e9" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/name/default")
 }
 
 // TestParseProfile_DefaultMaxLength checks that a string default exceeding maxLength
