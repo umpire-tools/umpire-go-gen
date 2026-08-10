@@ -145,3 +145,52 @@ func TestDecodeAndTags(t *testing.T) {
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)
 }
+
+func TestEmitValidationAndStrictDecode(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"title":{"type":"string","minLength":3,"maxLength":10},
+			"count":{"type":"integer","minimum":1,"maximum":5},
+			"tags":{"type":"array","items":{"type":"string"},"maxItems":2},
+			"nodes":{"type":"array","items":{"$ref":"#/$defs/node"},"minItems":1}
+		},
+		"required":["title","nodes"],
+		"$defs":{"node":{"type":"object","properties":{"id":{"type":"string"}},"additionalProperties":false}}
+	}`
+	testSrc := `
+func TestStrictAndValidate(t *testing.T) {
+	hasIssue := func(t *testing.T, issues []Issue, code, path string) bool {
+		for _, i := range issues {
+			if i.Code == code && i.Path == path {
+				return true
+			}
+		}
+		return false
+	}
+	// valid
+	var d Doc
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\",\"count\":3,\"tags\":[\"a\"],\"nodes\":[{\"id\":\"n\"}]}`" + `), &d); err != nil { t.Fatal(err) }
+	if v := d.Validate(); len(v) != 0 { t.Fatalf("want clean, got %+v", v) }
+	// rune-based minLength: 3 x-e-acute = 3 code points, valid at minLength 3
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"\\u00e9\\u00e9\\u00e9\",\"nodes\":[{\"id\":\"n\"}]}`" + `), &d); err != nil { t.Fatal(err) }
+	if v := d.Validate(); len(v) != 0 { t.Fatalf("rune length: got %+v", v) }
+	// title too short
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"ab\",\"nodes\":[{\"id\":\"n\"}]}`" + `), &d); err != nil { t.Fatal(err) }
+	if !hasIssue(t, d.Validate(), "minLength", "/title") { t.Fatal("want minLength @ /title") }
+	// count out of range (optional)
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\",\"count\":9,\"nodes\":[{\"id\":\"n\"}]}`" + `), &d); err != nil { t.Fatal(err) }
+	if !hasIssue(t, d.Validate(), "maximum", "/count") { t.Fatal("want maximum @ /count") }
+	// nodes empty -> minItems
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\",\"nodes\":[]}`" + `), &d); err != nil { t.Fatal(err) }
+	if !hasIssue(t, d.Validate(), "minItems", "/nodes") { t.Fatal("want minItems @ /nodes") }
+	// unknown property -> strict decode error
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\",\"nodes\":[{\"id\":\"n\"}],\"bogus\":1}`" + `), &d); err == nil { t.Fatal("want unknown-field error") }
+	// missing required nodes
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\"}`" + `), &d); err == nil { t.Fatal("want missing-required error") }
+	// null required nodes
+	if err := json.Unmarshal([]byte(` + "`{\"title\":\"abc\",\"nodes\":null}`" + `), &d); err == nil { t.Fatal("want null-required error") }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}

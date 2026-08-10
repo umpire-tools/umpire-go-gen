@@ -48,7 +48,10 @@ func TestBuildScalars(t *testing.T) {
 	if len(spec.Root) != 4 || len(spec.Types) != 0 {
 		t.Fatalf("unexpected shape: %d root, %d types", len(spec.Root), len(spec.Types))
 	}
-	cases := map[string]struct{ scalar Scalar; req bool }{
+	cases := map[string]struct {
+		scalar Scalar
+		req    bool
+	}{
 		"title":   {ScalarString, true},
 		"enabled": {ScalarBool, false},
 		"count":   {ScalarInt, false},

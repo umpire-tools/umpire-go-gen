@@ -24,13 +24,13 @@ const (
 // TypeDef is a named type emitted by structgen. Exactly one family applies
 // depending on Kind.
 type TypeDef struct {
-	Name          string       // Go type name (PascalCase), e.g. "Node", "ActionKind"
-	Kind          Kind         // object | enum | union | array-alias
-	JSONName      string       // original JSON property name for inline types; "" for $defs/root
-	Fields        []FieldDef   // object / union: declared fields (union includes all branches)
-	Values        []EnumValue  // enum: allowed wire values in declared order
-	Discriminator string       // union: the shared discriminator property (e.g. "kind")
-	Elem          *FieldType   // array-alias: the element type
+	Name          string      // Go type name (PascalCase), e.g. "Node", "ActionKind"
+	Kind          Kind        // object | enum | union | array-alias
+	JSONName      string      // original JSON property name for inline types; "" for $defs/root
+	Fields        []FieldDef  // object / union: declared fields (union includes all branches)
+	Values        []EnumValue // enum: allowed wire values in declared order
+	Discriminator string      // union: the shared discriminator property (e.g. "kind")
+	Elem          *FieldType  // array-alias: the element type
 }
 
 // EnumValue is one allowed value of an enum type.
@@ -41,20 +41,20 @@ type EnumValue struct {
 
 // FieldDef is one field of an object/union type, or of the root.
 type FieldDef struct {
-	Name string // original JSON property name, e.g. "workflowType"
-	GoName string // PascalCase Go identifier, e.g. "WorkflowType"
-	JSONTag string // lowercase json tag text
-	Required bool // whether the property appears in the object's required array
-	Type FieldType // structural type
+	Name     string    // original JSON property name, e.g. "workflowType"
+	GoName   string    // PascalCase Go identifier, e.g. "WorkflowType"
+	JSONTag  string    // lowercase json tag text
+	Required bool      // whether the property appears in the object's required array
+	Type     FieldType // structural type
 	// Constraints used by validation (chunk 5).
-	MinLength  *int
-	MaxLength  *int
-	Minimum    *float64
-	Maximum    *float64
-	MinItems   *int
-	MaxItems   *int
-	Const      any // const value when HasConst
-	HasConst   bool
+	MinLength *int
+	MaxLength *int
+	Minimum   *float64
+	Maximum   *float64
+	MinItems  *int
+	MaxItems  *int
+	Const     any // const value when HasConst
+	HasConst  bool
 }
 
 // FieldType is the structural type of a field: either a primitive scalar, an
