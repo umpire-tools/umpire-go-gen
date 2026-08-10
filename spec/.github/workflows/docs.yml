@@ -3,7 +3,7 @@ name: Deploy docs
 on:
   push:
     branches: [main]
-    paths: ['docs/**', 'umpire.schema.json']
+    paths: ['docs/**', 'umpire.schema.json', 'profiles/**']
   workflow_dispatch:
 
 permissions:
@@ -25,7 +25,10 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run --cwd docs build
+      # Publish the umpire base schema
       - run: cp umpire.schema.json docs/.vitepress/dist/
+      # Publish the profile schema at its canonical path
+      - run: mkdir -p docs/.vitepress/dist/profiles/json-schema/v1 && cp profiles/json-schema/v1/profile.schema.json docs/.vitepress/dist/profiles/json-schema/v1/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/.vitepress/dist

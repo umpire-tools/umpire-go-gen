@@ -11,6 +11,9 @@ hero:
     - theme: brand
       text: Schema Reference
       link: /schema
+    - theme: brand
+      text: JSON Schema Profile
+      link: /profiles
     - theme: alt
       text: Integrating a Port
       link: /integrating
@@ -34,3 +37,16 @@ You can also configure it manually:
   ]
 }
 ```
+
+## JSON Schema Composition Profile
+
+The [JSON Schema Composition Profile](/profiles) wraps Umpire field availability and
+JSON Schema structural validation into a single portable document.
+
+Profile v1 schema:
+
+```
+https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json
+```
+
+The profile is versioned independently from the base Umpire schema.
