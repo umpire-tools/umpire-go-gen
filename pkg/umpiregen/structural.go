@@ -35,7 +35,15 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 	if err != nil {
 		return "", false, nil
 	}
-	em, err := structgen.Emit(spec, cfg.PkgName)
+	fieldsName := cfg.FieldsName
+	if fieldsName == "" {
+		fieldsName = cfg.SchemaName + "Fields"
+	}
+	em, err := structgen.Emit(spec, structgen.EmitOptions{
+		PkgName:      cfg.PkgName,
+		SchemaName:   cfg.SchemaName,
+		RootTypeName: fieldsName,
+	})
 	if err != nil {
 		return "", false, nil
 	}

@@ -17,7 +17,7 @@ func runGenerated(t *testing.T, valueSchema, root, pkg, testSrc string) {
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
 	}
-	em, err := Emit(spec, pkg)
+	em, err := Emit(spec, EmitOptions{PkgName: pkg})
 	if err != nil {
 		t.Fatalf("Emit() error: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestEmitCompilesAvenor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build(): %v", err)
 	}
-	em, err := Emit(spec, "smoke")
+	em, err := Emit(spec, EmitOptions{PkgName: "smoke"})
 	if err != nil {
 		t.Fatalf("Emit(): %v", err)
 	}
@@ -117,6 +117,7 @@ func TestUnionDecode(t *testing.T) {
 	if a.Timeout == nil || *a.Timeout != 5 { t.Fatalf("Timeout=%v", a.Timeout) }
 	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"manual\",\"instructions\":\"x\"}`" + `), &a); err != nil { t.Fatal(err) }
 	if a.Kind != ActionKindManual || a.Instructions == nil || *a.Instructions != "x" { t.Fatal("manual decode wrong") }
+	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"manual\",\"instructions\":\"x\",\"command\":\"go\"}`" + `), &a); err == nil { t.Fatal("want error for property from another union branch") }
 	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"bogus\"}`" + `), &a); err == nil { t.Fatal("want error for unknown discriminator") }
 	if err := json.Unmarshal([]byte(` + "`{}`" + `), &a); err == nil { t.Fatal("want error for missing discriminator") }
 	if string(ActionKindManual) != "manual" || string(ActionKindRun) != "run" { t.Fatal("wire values wrong") }
@@ -258,6 +259,14 @@ func TestEmitOptionalEmptyObjectAndNested(t *testing.T) {
 		},
 		"required":[]
 	}`
+	spec := mustBuild(t, vs, "Doc")
+	em, err := Emit(spec, EmitOptions{PkgName: "smoke", SchemaName: "Doc"})
+	if err != nil {
+		t.Fatalf("Emit(): %v", err)
+	}
+	if !strings.Contains(em.Source, "type Extra struct") {
+		t.Fatalf("empty schema must emit a named Extra struct:\n%s", em.Source)
+	}
 	testSrc := `
 func TestOptionalNilAndNested(t *testing.T) {
 	var d Doc

@@ -252,13 +252,18 @@ func (b *builder) resolveEnum(node map[string]json.RawMessage, hint string) (Fie
 // resolveUnion fills a named union TypeDef and returns its field type. The union
 // merges the discriminator (shared required string-const property) plus every
 // branch field; non-discriminator fields are optional in the merged struct.
+// Field and discriminator property names are keyed by their ORIGINAL JSON wire
+// name so arbitrary profile-accepted identifiers survive round-tripping and
+// strict decoding (including the discriminator key). Each branch additionally
+// keeps its own property schemas (with constraints) for per-branch raw
+// validation and branch-required strictness.
 func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (FieldType, error) {
 	var oneOf []json.RawMessage
 	if err := json.Unmarshal(node["oneOf"], &oneOf); err != nil {
 		return FieldType{}, fmt.Errorf("oneOf is not an array")
 	}
 
-	fieldType := map[string]FieldType{}
+	fieldType := map[string]FieldType{} // keyed by original wire name
 	var fieldOrder []string
 	addField := func(n string, ft FieldType) {
 		if _, ok := fieldType[n]; !ok {
@@ -269,7 +274,8 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 
 	discriminator := ""
 	var branchOrder []string
-	branchReq := map[string][]string{} // discriminator wire -> branch-required JSON names
+	var branchDefs []UnionBranch
+	branchIdx := map[string]int{} // discriminator wire -> index in branchDefs
 	for _, brRaw := range oneOf {
 		var br map[string]json.RawMessage
 		if err := json.Unmarshal(brRaw, &br); err != nil || !hasNode(br, "properties") {
@@ -280,35 +286,45 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 			return FieldType{}, fmt.Errorf("branch properties is not an object")
 		}
 		req := requiredSet(br)
+
+		var brFields []FieldDef
 		for _, propName := range sortedKeys(props) {
 			ft, err := b.resolve(props[propName], codegen.GoFieldName(propName), propName, false)
 			if err != nil {
 				return FieldType{}, err
 			}
-			addField(codegen.GoFieldName(propName), ft)
+			addField(propName, ft)
+			bf := FieldDef{
+				Name:     propName,
+				GoName:   codegen.GoFieldName(propName),
+				JSONTag:  propName,
+				Required: req[propName],
+				Type:     ft,
+			}
+			attachConstraints(&bf, props[propName])
+			brFields = append(brFields, bf)
 		}
+		// Identify the discriminator: the first required property with a string const.
 		if discriminator == "" {
 			for _, propName := range sortedKeys(props) {
 				if req[propName] && hasStringConst(props[propName]) {
-					discriminator = codegen.GoFieldName(propName)
+					discriminator = propName
 					break
 				}
 			}
 		}
-		// Record this branch's discriminator const value and its required fields.
-		if d, ok := discConst(props, discriminator); ok {
-			if _, dup := branchReq[d]; dup {
-				return FieldType{}, fmt.Errorf("oneOf union %q: duplicate discriminator value %q", hint, d)
-			}
-			branchOrder = append(branchOrder, d)
-			var reqNames []string
-			for _, propName := range sortedKeys(props) {
-				if req[propName] && codegen.GoFieldName(propName) != discriminator {
-					reqNames = append(reqNames, propName)
-				}
-			}
-			branchReq[d] = reqNames
+
+		// Record this branch (its const value and per-branch schemas/requirements).
+		d, ok := discConst(props, discriminator)
+		if !ok {
+			return FieldType{}, fmt.Errorf("oneOf union %q branch lacks discriminator const %q", hint, discriminator)
 		}
+		if _, dup := branchIdx[d]; dup {
+			return FieldType{}, fmt.Errorf("oneOf union %q: duplicate discriminator value %q", hint, d)
+		}
+		branchIdx[d] = len(branchDefs)
+		branchDefs = append(branchDefs, UnionBranch{Wire: d, Fields: brFields})
+		branchOrder = append(branchOrder, d)
 	}
 	if discriminator == "" {
 		return FieldType{}, fmt.Errorf("oneOf union %q has no required string discriminator", hint)
@@ -325,15 +341,23 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	b.types[enumIdx] = enumT
 	fieldType[discriminator] = FieldType{Kind: KindEnum, Ref: enumName}
 
-	td := TypeDef{Name: hint, Kind: KindUnion, JSONName: hint, Discriminator: discriminator}
-	for _, w := range branchOrder {
-		td.Branches = append(td.Branches, UnionBranch{Wire: w, Required: branchReq[w]})
+	// Per-branch Required lists (wire names), minus the discriminator key itself.
+	for i := range branchDefs {
+		var reqNames []string
+		for _, bf := range branchDefs[i].Fields {
+			if bf.Required && bf.Name != discriminator {
+				reqNames = append(reqNames, bf.Name)
+			}
+		}
+		branchDefs[i].Required = reqNames
 	}
+
+	td := TypeDef{Name: hint, Kind: KindUnion, JSONName: hint, Discriminator: discriminator, Branches: branchDefs}
 	for _, n := range fieldOrder {
 		td.Fields = append(td.Fields, FieldDef{
-			Name:     wireName(n),
-			GoName:   n,
-			JSONTag:  wireName(n),
+			Name:     n,
+			GoName:   codegen.GoFieldName(n),
+			JSONTag:  n,
 			Required: n == discriminator, // only the discriminator is required at the merged-struct level
 			Type:     fieldType[n],
 		})
@@ -345,26 +369,24 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 
 // discConst returns the string const value of the named discriminator property
 // within a branch's properties, if present.
-func discConst(props map[string]json.RawMessage, goName string) (string, bool) {
-	for propName, raw := range props {
-		if codegen.GoFieldName(propName) != goName {
-			continue
-		}
-		var node map[string]json.RawMessage
-		if json.Unmarshal(raw, &node) != nil {
-			return "", false
-		}
-		c, ok := node["const"]
-		if !ok {
-			return "", false
-		}
-		var s string
-		if json.Unmarshal(c, &s) != nil {
-			return "", false
-		}
-		return s, true
+func discConst(props map[string]json.RawMessage, wire string) (string, bool) {
+	raw, ok := props[wire]
+	if !ok {
+		return "", false
 	}
-	return "", false
+	var node map[string]json.RawMessage
+	if json.Unmarshal(raw, &node) != nil {
+		return "", false
+	}
+	c, ok := node["const"]
+	if !ok {
+		return "", false
+	}
+	var s string
+	if json.Unmarshal(c, &s) != nil {
+		return "", false
+	}
+	return s, true
 }
 
 func uniqueSorted(in []string) []string {

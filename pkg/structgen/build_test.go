@@ -184,8 +184,8 @@ func TestBuildUnion(t *testing.T) {
 	if u == nil || u.Kind != KindUnion {
 		t.Fatalf("missing Action union")
 	}
-	if u.Discriminator != "Kind" {
-		t.Errorf("Discriminator = %q, want Kind", u.Discriminator)
+	if u.Discriminator != "kind" {
+		t.Errorf("Discriminator = %q, want kind", u.Discriminator)
 	}
 	kind := fieldByName(u.Fields, "kind")
 	if kind == nil || !kind.Required {
@@ -200,6 +200,37 @@ func TestBuildUnion(t *testing.T) {
 		if fd.Required {
 			t.Errorf("branch field %q should be optional in merged union, got required", name)
 		}
+	}
+}
+
+func TestBuildUnionPreservesBranchConstraints(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{"action":{"oneOf":[
+			{"type":"object","properties":{"kind":{"const":"manual"},"instructions":{"type":"string","minLength":3}},"required":["kind","instructions"]},
+			{"type":"object","properties":{"kind":{"const":"run"},"timeout":{"type":"integer","minimum":1}},"required":["kind","timeout"]}
+		]}}
+	}`
+	spec := mustBuild(t, vs, "Doc")
+	action := spec.Lookup("Action")
+	if action == nil || len(action.Branches) != 2 {
+		t.Fatalf("Action branches = %+v", action)
+	}
+	instructions := fieldByName(action.Branches[0].Fields, "instructions")
+	if instructions == nil || instructions.MinLength == nil || *instructions.MinLength != 3 {
+		t.Fatalf("manual instructions constraints = %+v", instructions)
+	}
+	timeout := fieldByName(action.Branches[1].Fields, "timeout")
+	if timeout == nil || timeout.Minimum == nil || *timeout.Minimum != 1 {
+		t.Fatalf("run timeout constraints = %+v", timeout)
+	}
+}
+
+func TestRootGoTypesPreservePresence(t *testing.T) {
+	vs := `{"type":"object","properties":{"title":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["title"]}`
+	got := RootGoTypes(mustBuild(t, vs, "Doc"))
+	if got["title"] != "*string" || got["tags"] != "*[]string" {
+		t.Fatalf("root types = %#v, want presence-preserving pointers", got)
 	}
 }
 
@@ -273,7 +304,7 @@ func TestBuildAvenorWorkflowFixture(t *testing.T) {
 		}
 	}
 	action := spec.Lookup("Action")
-	if action == nil || action.Kind != KindUnion || action.Discriminator != "Kind" {
+	if action == nil || action.Kind != KindUnion || action.Discriminator != "kind" {
 		t.Fatalf("Action = %+v, want union with Kind discriminator", action)
 	}
 	// union const wiring should be detached from branch fields; discriminator required.
@@ -300,6 +331,17 @@ func TestBuildDeterministic(t *testing.T) {
 	a2, _ := json.Marshal(s2)
 	if !strings.EqualFold(string(a1), string(a2)) {
 		t.Fatalf("IR not deterministic:\n%s\nvs\n%s", a1, a2)
+	}
+	e1, err := Emit(s1, EmitOptions{PkgName: "deterministic", SchemaName: "D"})
+	if err != nil {
+		t.Fatalf("Emit(s1): %v", err)
+	}
+	e2, err := Emit(s2, EmitOptions{PkgName: "deterministic", SchemaName: "D"})
+	if err != nil {
+		t.Fatalf("Emit(s2): %v", err)
+	}
+	if e1.Source != e2.Source {
+		t.Fatalf("emitted source is not deterministic")
 	}
 	// Type order stable: inline types appended after $defs, in first-encounter order.
 	names := []string{}
@@ -341,6 +383,13 @@ func TestBuildUnionDuplicateDiscriminator(t *testing.T) {
 
 // TestBuildForwardRefToEnum: a $def referencing a later-defined enum resolves to
 // the enum kind (not KindObject) thanks to the finalize pass.
+func TestBuildRejectsNonStringEnum(t *testing.T) {
+	vs := `{"type":"object","properties":{"mode":{"type":"string","enum":[1]}}}`
+	if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), "enum is not an array of strings") {
+		t.Fatalf("expected non-string enum rejection, got: %v", err)
+	}
+}
+
 func TestBuildForwardRefToEnum(t *testing.T) {
 	vs := `{
 		"type":"object",

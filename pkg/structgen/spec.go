@@ -21,13 +21,13 @@ const (
 	ScalarNumber Scalar = "number"
 )
 
-// TypeDef is a named type emitted by structgen. Exactly one family applies
-// depending on Kind.
-// UnionBranch captures one tagged-union branch: its discriminator wire value and
-// the property names that branch requires (for branch-level strict decoding).
+// UnionBranch captures one tagged-union branch: its discriminator wire value, the
+// branch's own declared property schemas (original wire names in FieldDef.Name /
+// JSONTag, with constraints attached), and the property names that branch requires.
 type UnionBranch struct {
-	Wire     string   // discriminator const value, e.g. "manual"
-	Required []string // branch-required JSON property names
+	Wire     string     // discriminator const value, e.g. "manual"
+	Fields   []FieldDef // this branch's declared properties (includes the discriminator)
+	Required []string   // branch-required JSON property names
 }
 
 // TypeDef is a named type emitted by structgen. Exactly one family applies
