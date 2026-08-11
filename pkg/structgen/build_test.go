@@ -381,8 +381,6 @@ func TestBuildUnionDuplicateDiscriminator(t *testing.T) {
 	}
 }
 
-// TestBuildForwardRefToEnum: a $def referencing a later-defined enum resolves to
-// the enum kind (not KindObject) thanks to the finalize pass.
 func TestBuildRejectsNonStringEnum(t *testing.T) {
 	vs := `{"type":"object","properties":{"mode":{"type":"string","enum":[1]}}}`
 	if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), "enum is not an array of strings") {
@@ -390,6 +388,8 @@ func TestBuildRejectsNonStringEnum(t *testing.T) {
 	}
 }
 
+// TestBuildForwardRefToEnum verifies that finalize resolves a forward enum
+// reference to KindEnum rather than KindObject.
 func TestBuildForwardRefToEnum(t *testing.T) {
 	vs := `{
 		"type":"object",

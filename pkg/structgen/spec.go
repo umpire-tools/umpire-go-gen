@@ -21,9 +21,9 @@ const (
 	ScalarNumber Scalar = "number"
 )
 
-// UnionBranch captures one tagged-union branch: its discriminator wire value, the
-// branch's own declared property schemas (original wire names in FieldDef.Name /
-// JSONTag, with constraints attached), and the property names that branch requires.
+// UnionBranch represents one tagged-union branch.
+// It stores the discriminator wire value and the branch's property schemas.
+// Field names and JSON tags retain their original wire values.
 type UnionBranch struct {
 	Wire     string     // discriminator const value, e.g. "manual"
 	Fields   []FieldDef // this branch's declared properties (includes the discriminator)

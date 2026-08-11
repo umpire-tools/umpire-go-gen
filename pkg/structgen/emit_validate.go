@@ -186,8 +186,8 @@ func emitScalarConstraints(b *strings.Builder, f FieldDef, val, tagPath string) 
 			b.WriteString("\t}\n")
 		}
 	case ScalarInt:
-		// Bounds may be fractional in the schema (e.g. minimum 0.5 on an integer);
-		// compare in float64 so the generated code always compiles.
+		// Schema bounds can be fractional, for example minimum 0.5.
+		// Cast the integer to float64 before comparison.
 		if f.Minimum != nil {
 			fmt.Fprintf(b, "\tif float64(%s) < %v {\n", val, *f.Minimum)
 			emitIssue(b, "minimum", tagPath)

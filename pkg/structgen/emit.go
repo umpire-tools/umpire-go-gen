@@ -19,13 +19,10 @@ type EmitOptions struct {
 	RootTypeName string // Go type that Decode<Schema> decodes into (e.g. <Schema>Fields)
 }
 
-// Emit renders a Spec into a complete, standard-library-only Go source file.
-// Objects become named structs with strict UnmarshalJSON (unknown/trailing/
-// required rejection) and validateInto; enums become named types + constants;
-// unions carry discriminator-based decoding; the root gains Validate(). It also
-// emits the plan-conformant raw APIs Validate<Schema>JSON / Decode<Schema> with
-// <Schema>StructuralIssue / <Schema>StructuralError. Never emits `any` for a
-// profile-declared object/union/enum.
+// Emit writes a complete Go source file that uses only the standard library.
+// It emits strict object decoders, enums, tagged unions, and typed validation.
+// It also emits Validate<Schema>JSON, Decode<Schema>, and structural issue types.
+// Profile-declared objects, unions, and enums never expose `any`.
 func Emit(spec *Spec, opts EmitOptions) (*Emission, error) {
 	utf8 := specNeedsImports(spec)
 
@@ -102,12 +99,9 @@ func specNeedsImports(spec *Spec) (utf8 bool) {
 	return
 }
 
-// RootGoTypes returns the emitted Go field type for each root field, keyed by
-// original JSON name. Used by the profile path to surface structural root types
-// in the existing availability Fields struct. Per the profile contract every
-// top-level field uses a presence-preserving pointer (*T, *[]T, or *NestedType)
-// so omitted (nil) fields stay unsatisfied for Umpire evaluation while remaining
-// distinct from explicit values.
+// RootGoTypes maps each original root property name to its Go type.
+// Every profile root field uses a pointer to preserve presence.
+// Nil records omission as distinct from an explicit value for Umpire evaluation.
 func RootGoTypes(spec *Spec) map[string]string {
 	out := make(map[string]string, len(spec.Root))
 	for _, f := range spec.Root {

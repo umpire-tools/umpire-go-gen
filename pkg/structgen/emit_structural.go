@@ -39,17 +39,10 @@ func (g rawGen) enumWires(ft FieldType) []string {
 	return out
 }
 
-// emitStructural renders the plan-conformant raw structural validation surface:
-//
-//	type <S>StructuralIssue { Source, Code, Path, SchemaPath, Message }
-//	type <S>StructuralError struct { Issues []<S>StructuralIssue }
-//	func (e *<S>StructuralError) Error() string
-//	func Validate<S>JSON(data []byte) ([]<S>StructuralIssue, error)
-//	func Decode<S>(data []byte) (<RootType>, error)
-//
-// Validation runs against raw json.RawMessage so omitted optional properties stay
-// distinct from invalid explicit null, and well-formed structural failures are
-// returned as normalized (sorted, deduped) issues rather than decode errors.
+// emitStructural emits the profile's raw structural validation API.
+// It emits structural issues, structural errors, validation, and decoding.
+// Raw values keep omitted optional properties distinct from explicit null.
+// Well-formed structural failures return sorted, deduplicated issues.
 func emitStructural(b *strings.Builder, spec *Spec, opts EmitOptions) {
 	S := opts.SchemaName
 	if S == "" {

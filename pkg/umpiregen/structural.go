@@ -10,10 +10,9 @@ import (
 	"github.com/umpire-tools/umpire-go-gen/pkg/structgen"
 )
 
-// generateStructural emits one Go source file combining the valueSchema-derived
-// structural types (pkg/structgen) with the existing availability Check()/Challenge()
-// generated over the richer root field types (chunk 7). Availability-only inputs
-// (no valueSchema) keep the existing single-file output unchanged (chunk 8).
+// generateStructural combines value-schema types with availability functions.
+// Check and Challenge use the richer root field types.
+// Inputs without a value schema retain the existing availability-only output.
 func generateStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, error) {
 	if src, ok, _ := tryStructural(umpireJSON, valueSchemaJSON, cfg); ok {
 		return src, nil

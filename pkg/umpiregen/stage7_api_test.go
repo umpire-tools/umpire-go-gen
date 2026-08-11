@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-// TestGenerateComposedStructural_RawAPI verifies the Stage 7 raw-validation and
-// decode surface. It deliberately uses non-round-trippable JSON property names
-// inside a tagged union so generated JSON tags must retain the original wires.
+// TestGenerateComposedStructural_RawAPI verifies Stage 7 raw validation and DecodeDoc.
+// Its tagged union uses JSON property names that do not round-trip through Go names.
+// Generated tags must retain the original schema property names.
 func TestGenerateComposedStructural_RawAPI(t *testing.T) {
 	umpireJSON := []byte(`{
 		"version":1,
