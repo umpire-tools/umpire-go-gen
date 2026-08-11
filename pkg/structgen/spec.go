@@ -23,14 +23,24 @@ const (
 
 // TypeDef is a named type emitted by structgen. Exactly one family applies
 // depending on Kind.
+// UnionBranch captures one tagged-union branch: its discriminator wire value and
+// the property names that branch requires (for branch-level strict decoding).
+type UnionBranch struct {
+	Wire     string   // discriminator const value, e.g. "manual"
+	Required []string // branch-required JSON property names
+}
+
+// TypeDef is a named type emitted by structgen. Exactly one family applies
+// depending on Kind.
 type TypeDef struct {
-	Name          string      // Go type name (PascalCase), e.g. "Node", "ActionKind"
-	Kind          Kind        // object | enum | union | array-alias
-	JSONName      string      // original JSON property name for inline types; "" for $defs/root
-	Fields        []FieldDef  // object / union: declared fields (union includes all branches)
-	Values        []EnumValue // enum: allowed wire values in declared order
-	Discriminator string      // union: the shared discriminator property (e.g. "kind")
-	Elem          *FieldType  // array-alias: the element type
+	Name          string        // Go type name (PascalCase), e.g. "Node", "ActionKind"
+	Kind          Kind          // object | enum | union | array-alias
+	JSONName      string        // original JSON property name for inline types; "" for $defs/root
+	Fields        []FieldDef    // object / union: declared fields (union includes all branches)
+	Values        []EnumValue   // enum: allowed wire values in declared order
+	Discriminator string        // union: the shared discriminator property (e.g. "kind")
+	Branches      []UnionBranch // union: per-discriminator branch requirements
+	Elem          *FieldType    // array-alias: the element type
 }
 
 // EnumValue is one allowed value of an enum type.

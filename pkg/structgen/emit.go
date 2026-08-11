@@ -3,6 +3,8 @@ package structgen
 import (
 	"fmt"
 	"strings"
+
+	"github.com/umpire-tools/umpire-go-gen/pkg/codegen"
 )
 
 // Emission is the rendered Go source for a Spec.
@@ -55,6 +57,7 @@ func emitImports(b *strings.Builder, strconv, utf8 bool) {
 	b.WriteString("import (\n")
 	b.WriteString("\t\"encoding/json\"\n")
 	b.WriteString("\t\"fmt\"\n")
+	b.WriteString("\t\"strings\"\n") // escapePtr uses strings.ReplaceAll
 	if strconv {
 		b.WriteString("\t\"strconv\"\n")
 	}
@@ -185,20 +188,28 @@ func emitUnionDecoder(b *strings.Builder, spec *Spec, td TypeDef) {
 		fmt.Fprintf(b, "\t\tcase %q:\n", f.JSONTag)
 	}
 	b.WriteString("\t\tdefault:\n\t\t\treturn fmt.Errorf(\"unknown field %q\", key)\n\t\t}\n\t}\n")
-	// Discriminator must match a known const.
-	fmt.Fprintf(b, "\ttype alias %s\n", td.Name)
-	b.WriteString("\tif err := json.Unmarshal(data, (*alias)(u)); err != nil {\n\t\treturn err\n\t}\n")
+	// Dispatch per discriminator const, enforcing each branch's required fields.
 	fmt.Fprintf(b, "\tswitch %s(dv) {\n", enumName)
-	enum := spec.Lookup(enumName)
-	if enum != nil {
-		for _, v := range enum.Values {
-			fmt.Fprintf(b, "\tcase %s%s:\n", enumName, v.Name)
+	for _, br := range td.Branches {
+		fmt.Fprintf(b, "\tcase %s%s:\n", enumName, codegen.GoFieldName(br.Wire))
+		for _, req := range br.Required {
+			if req == discJSON {
+				continue
+			}
+			fmt.Fprintf(b, "\t\tif _, ok := raw[%q]; !ok {\n", req)
+			fmt.Fprintf(b, "\t\t\treturn fmt.Errorf(%q)\n", "branch \""+br.Wire+"\": missing required field \""+req+"\"")
+			b.WriteString("\t\t}\n")
+			fmt.Fprintf(b, "\t\tif %s {\n", "len(raw["+strconvQ(req)+"]) == 4 && string(raw["+strconvQ(req)+"]) == \"null\"")
+			fmt.Fprintf(b, "\t\t\treturn fmt.Errorf(%q)\n", "branch \""+br.Wire+"\": required field \""+req+"\" must not be null")
+			b.WriteString("\t\t}\n")
 		}
-		b.WriteString("\t\t// recognized discriminator value\n")
 	}
 	b.WriteString("\tdefault:\n")
 	fmt.Fprintf(b, "\t\treturn fmt.Errorf(%q, dv)\n", "unknown discriminator "+discJSON+": %q")
 	b.WriteString("\t}\n")
+	// Decode via alias after validating the discriminator and branch requirements.
+	fmt.Fprintf(b, "\ttype alias %s\n", td.Name)
+	b.WriteString("\tif err := json.Unmarshal(data, (*alias)(u)); err != nil {\n\t\treturn err\n\t}\n")
 	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
 }

@@ -47,6 +47,10 @@ func Build(valueSchema json.RawMessage, rootName string) (*Spec, error) {
 		return nil, fmt.Errorf("valueSchema root: %w", err)
 	}
 
+	// All types are now fully built; correct any field reference kinds that were
+	// forced to KindObject by forward $def references.
+	b.finalize()
+
 	// Emit the root as Root (not as a separate named type), then every other named type.
 	var types []TypeDef
 	for _, td := range b.types {
@@ -79,6 +83,44 @@ func (b *builder) at(name string) *TypeDef {
 		return nil
 	}
 	return &b.types[idx]
+}
+
+// finalize corrects field reference kinds now that every named type is fully
+// built. Forward $def references were resolved against empty placeholders and
+// forced to KindObject; this restores the true object/enum/union kind so
+// emission and validation recursion see the right type family.
+func (b *builder) finalize() {
+	var fixFT func(ft *FieldType)
+	fixFT = func(ft *FieldType) {
+		if ft == nil {
+			return
+		}
+		if ft.Kind == KindArray {
+			fixFT(ft.Elem)
+			return
+		}
+		if ft.Ref != "" {
+			if td := b.at(ft.Ref); td != nil {
+				ft.Kind = actualKind(td.Kind)
+			}
+		}
+	}
+	for i := range b.types {
+		for j := range b.types[i].Fields {
+			fixFT(&b.types[i].Fields[j].Type)
+		}
+	}
+}
+
+func actualKind(k Kind) Kind {
+	switch k {
+	case KindEnum:
+		return KindEnum
+	case KindUnion:
+		return KindUnion
+	default:
+		return KindObject
+	}
 }
 
 // resolve returns the FieldType for a schema node and, for object/union/enum
@@ -226,7 +268,8 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	}
 
 	discriminator := ""
-	var discConsts []string
+	var branchOrder []string
+	branchReq := map[string][]string{} // discriminator wire -> branch-required JSON names
 	for _, brRaw := range oneOf {
 		var br map[string]json.RawMessage
 		if err := json.Unmarshal(brRaw, &br); err != nil || !hasNode(br, "properties") {
@@ -252,9 +295,19 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 				}
 			}
 		}
-		// Record this branch's discriminator const value.
+		// Record this branch's discriminator const value and its required fields.
 		if d, ok := discConst(props, discriminator); ok {
-			discConsts = append(discConsts, d)
+			if _, dup := branchReq[d]; dup {
+				return FieldType{}, fmt.Errorf("oneOf union %q: duplicate discriminator value %q", hint, d)
+			}
+			branchOrder = append(branchOrder, d)
+			var reqNames []string
+			for _, propName := range sortedKeys(props) {
+				if req[propName] && codegen.GoFieldName(propName) != discriminator {
+					reqNames = append(reqNames, propName)
+				}
+			}
+			branchReq[d] = reqNames
 		}
 	}
 	if discriminator == "" {
@@ -265,7 +318,7 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	// union's branch const values.
 	enumName := hint + "Kind"
 	enumT := TypeDef{Name: enumName, Kind: KindEnum, JSONName: hint}
-	for _, v := range uniqueSorted(discConsts) {
+	for _, v := range uniqueSorted(branchOrder) {
 		enumT.Values = append(enumT.Values, EnumValue{Name: codegen.GoFieldName(v), Wire: v})
 	}
 	enumIdx := b.register(enumT)
@@ -273,6 +326,9 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	fieldType[discriminator] = FieldType{Kind: KindEnum, Ref: enumName}
 
 	td := TypeDef{Name: hint, Kind: KindUnion, JSONName: hint, Discriminator: discriminator}
+	for _, w := range branchOrder {
+		td.Branches = append(td.Branches, UnionBranch{Wire: w, Required: branchReq[w]})
+	}
 	for _, n := range fieldOrder {
 		td.Fields = append(td.Fields, FieldDef{
 			Name:     wireName(n),

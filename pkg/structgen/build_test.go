@@ -320,3 +320,46 @@ func containsStr(s []string, v string) bool {
 	}
 	return false
 }
+
+// TestBuildUnionDuplicateDiscriminator: a union with two branches sharing the
+// same discriminator const value is rejected.
+func TestBuildUnionDuplicateDiscriminator(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"state":{"oneOf":[
+				{"type":"object","properties":{"kind":{"const":"x"},"a":{"type":"string"}},"required":["kind","a"]},
+				{"type":"object","properties":{"kind":{"const":"x"},"b":{"type":"string"}},"required":["kind","b"]}
+			]}
+		},
+		"$defs":{}
+	}`
+	if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), "duplicate discriminator") {
+		t.Fatalf("expected duplicate-discriminator error, got: %v", err)
+	}
+}
+
+// TestBuildForwardRefToEnum: a $def referencing a later-defined enum resolves to
+// the enum kind (not KindObject) thanks to the finalize pass.
+func TestBuildForwardRefToEnum(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{"w":{"$ref":"#/$defs/status"}},
+		"$defs":{
+			"holder":{"type":"object","properties":{"st":{"$ref":"#/$defs/status"}}},
+			"status":{"type":"string","enum":["ok","bad"]}
+		}
+	}`
+	spec := mustBuild(t, vs, "Doc")
+	holder := spec.Lookup("Holder")
+	if holder == nil {
+		t.Fatalf("missing Holder type")
+	}
+	st := fieldByName(holder.Fields, "st")
+	if st == nil {
+		t.Fatalf("missing holder.st field")
+	}
+	if st.Type.Kind != KindEnum || st.Type.Ref != "Status" {
+		t.Fatalf("holder.st type = %+v, want enum ref Status (forward ref misresolved)", st.Type)
+	}
+}

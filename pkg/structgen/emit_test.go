@@ -285,3 +285,56 @@ func TestEnumNonAlpha(t *testing.T) {
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)
 }
+
+// TestEmitEscapingNullEnumBranchRequired exercises the fixes from openai review:
+// RFC 6901 escaping, null-on-optional rejection, enum membership validation,
+// array-of-enum, and per-branch required enforcement.
+func TestEmitEscapingNullEnumBranchRequired(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"a/b":{"type":"string","minLength":2},
+			"x~y":{"type":"string","maxLength":1},
+			"opt":{"type":"string"},
+			"mode":{"type":"string","enum":["on","off"]},
+			"tags":{"type":"array","items":{"type":"string","enum":["red","blue"]}},
+			"state":{"oneOf":[
+				{"type":"object","properties":{"kind":{"const":"manual"},"instructions":{"type":"string"}},"required":["kind","instructions"]},
+				{"type":"object","properties":{"kind":{"const":"auto"}},"required":["kind"]}
+			]}
+		},
+		"$defs":{}
+	}`
+	testSrc := `
+func TestEscapingNullEnumBranch(t *testing.T) {
+	has := func(issues []Issue, code, path string) bool {
+		for _, i := range issues { if i.Code == code && i.Path == path { return true } }
+		return false
+	}
+	var d Doc
+	mk := func(s string) { d = Doc{}; if err := json.Unmarshal([]byte(s), &d); err != nil { t.Fatal("decode:", err) } }
+	// RFC 6901 escaping
+	mk(` + "`{\"a/b\":\"a\"}`" + `)
+	if !has(d.Validate(), "minLength", "/a~1b") { t.Fatalf("want /a~1b, got %+v", d.Validate()) }
+	mk(` + "`{\"x~y\":\"zz\"}`" + `)
+	if !has(d.Validate(), "maxLength", "/x~0y") { t.Fatalf("want /x~0y, got %+v", d.Validate()) }
+	// null on optional
+	if err := json.Unmarshal([]byte(` + "`{\"opt\":null}`" + `), &d); err == nil { t.Fatal("want null-on-optional error") }
+	// enum membership via Validate
+	mk(` + "`{\"mode\":\"nope\"}`" + `)
+	if !has(d.Validate(), "enum", "/mode") { t.Fatalf("want enum @ /mode, got %+v", d.Validate()) }
+	// array-of-enum per-index
+	mk(` + "`{\"tags\":[\"red\",\"purple\"]}`" + `)
+	if !has(d.Validate(), "enum", "/tags/1") { t.Fatalf("want enum @ /tags/1, got %+v", d.Validate()) }
+	// branch-required missing
+	if err := json.Unmarshal([]byte(` + "`{\"state\":{\"kind\":\"manual\"}}`" + `), &d); err == nil { t.Fatal("want missing branch-required error") }
+	// branch-required present decodes and validates clean
+	mk(` + "`{\"state\":{\"kind\":\"manual\",\"instructions\":\"x\"}}`" + `)
+	if v := d.Validate(); len(v) != 0 { t.Fatalf("want clean manual branch, got %+v", v) }
+	// auto branch requires only kind
+	mk(` + "`{\"state\":{\"kind\":\"auto\"}}`" + `)
+	if v := d.Validate(); len(v) != 0 { t.Fatalf("want clean auto branch, got %+v", v) }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}

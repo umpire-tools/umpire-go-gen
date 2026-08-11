@@ -61,8 +61,8 @@ func TestGenerateProfileStructural_Avenor(t *testing.T) {
 			t.Errorf("merged output missing %q", want)
 		}
 	}
-	if strings.Contains(source, "map[string]any") {
-		t.Errorf("merged output must not expose any (map[string]any)")
+	if strings.Contains(source, "map[string]any") || strings.Contains(source, "]any") || strings.Contains(source, "*any") {
+		t.Errorf("merged output must not expose any")
 	}
 	testutil.AssertGeneratedPackageCompiles(t, source)
 }
