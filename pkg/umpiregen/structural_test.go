@@ -147,9 +147,17 @@ func TestMergedRuntime(t *testing.T) {
 	// Availability over the richer field types.
 	var f WorkflowFields
 	if err := json.Unmarshal([]byte(` + "`" + payload + "`" + `), &f); err != nil { t.Fatal(err) }
-	av := Check(f, WorkflowConditions{}, WorkflowFields{})
+	// The rc.2 fixture supplies every condition referenced by availability rules;
+	// do not rely on the Go bool zero value as an implicit condition default.
+	av := Check(f, WorkflowConditions{AllowEdits: false}, WorkflowFields{})
 	if !av.Title.Required { t.Fatal("title should be required/available") }
 	if !av.Nodes.Satisfied { t.Fatal("nodes should be satisfied (non-empty)") }
+	if !av.Edges.Enabled || av.Edges.Reason != nil || len(av.Edges.Reasons) != 0 {
+		t.Fatalf("enabled edges must not carry a blocking reason: %+v", av.Edges)
+	}
+	if av.Status.Enabled || av.Status.Reason == nil || *av.Status.Reason != "Status editing is disabled" {
+		t.Fatalf("allowEdits=false should disable status: %+v", av.Status)
+	}
 }
 `
 	runMerged(t, source, "smoke", testSrc)
