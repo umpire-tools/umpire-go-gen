@@ -1,6 +1,5 @@
 {
-  "fixtureVersion": 101,
-  "profileVersion": 1,
+  "fixtureVersion": 1,
   "description": "Profile v1 conformance: definition acceptance/rejection and structural evaluation cases. This index is separate from the base Umpire conformance index.",
   "fixtures": [
     {

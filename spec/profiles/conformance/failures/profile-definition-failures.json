@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": 101,
+  "fixtureVersion": 1,
   "id": "profile-definition-failures",
   "description": "Profile definition rejection cases: unsupported keywords, field mismatches, incompatible isEmpty, invalid defaults, bad references, invalid discriminators, and unsafe numbers.",
   "failures": [
@@ -15,8 +15,12 @@
           "properties": {
             "x": {
               "allOf": [
-                { "type": "string" },
-                { "minLength": 1 }
+                {
+                  "type": "string"
+                },
+                {
+                  "minLength": 1
+                }
               ]
             }
           },
@@ -26,13 +30,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "x": { "isEmpty": "string" }
+            "x": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "unsupportedKeyword", "path": "/valueSchema/properties/x/allOf" }
+        {
+          "code": "unsupportedKeyword",
+          "path": "/valueSchema/properties/x/allOf"
+        }
       ]
     },
     {
@@ -47,8 +56,12 @@
           "properties": {
             "x": {
               "anyOf": [
-                { "type": "string" },
-                { "type": "number" }
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
               ]
             }
           },
@@ -58,13 +71,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "x": { "isEmpty": "string" }
+            "x": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "unsupportedKeyword", "path": "/valueSchema/properties/x/anyOf" }
+        {
+          "code": "unsupportedKeyword",
+          "path": "/valueSchema/properties/x/anyOf"
+        }
       ]
     },
     {
@@ -79,7 +97,9 @@
           "properties": {
             "x": {
               "type": "string",
-              "not": { "pattern": "bad" }
+              "not": {
+                "pattern": "bad"
+              }
             }
           },
           "required": [],
@@ -88,13 +108,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "x": { "isEmpty": "string" }
+            "x": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "unsupportedKeyword", "path": "/valueSchema/properties/x/not" }
+        {
+          "code": "unsupportedKeyword",
+          "path": "/valueSchema/properties/x/not"
+        }
       ]
     },
     {
@@ -109,7 +134,9 @@
           "properties": {
             "tags": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "uniqueItems": true
             }
           },
@@ -119,13 +146,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "tags": { "isEmpty": "array" }
+            "tags": {
+              "isEmpty": "array"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "unsupportedKeyword", "path": "/valueSchema/properties/tags/uniqueItems" }
+        {
+          "code": "unsupportedKeyword",
+          "path": "/valueSchema/properties/tags/uniqueItems"
+        }
       ]
     },
     {
@@ -149,13 +181,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "email": { "isEmpty": "string" }
+            "email": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "unsupportedKeyword", "path": "/valueSchema/properties/email/pattern" }
+        {
+          "code": "unsupportedKeyword",
+          "path": "/valueSchema/properties/email/pattern"
+        }
       ]
     },
     {
@@ -179,13 +216,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "email": { "isEmpty": "string" }
+            "email": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "unsupportedKeyword", "path": "/valueSchema/properties/email/format" }
+        {
+          "code": "unsupportedKeyword",
+          "path": "/valueSchema/properties/email/format"
+        }
       ]
     },
     {
@@ -198,7 +240,9 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "title": { "type": "string" }
+            "title": {
+              "type": "string"
+            }
           },
           "required": [],
           "additionalProperties": false
@@ -206,14 +250,21 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "title": { "isEmpty": "string" },
-            "extraField": { "isEmpty": "string" }
+            "title": {
+              "isEmpty": "string"
+            },
+            "extraField": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "fieldMismatch", "path": "/valueSchema" }
+        {
+          "code": "fieldMismatch",
+          "path": "/valueSchema"
+        }
       ]
     },
     {
@@ -226,7 +277,9 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "count": { "type": "integer" }
+            "count": {
+              "type": "integer"
+            }
           },
           "required": [],
           "additionalProperties": false
@@ -234,13 +287,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "count": { "isEmpty": "string" }
+            "count": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "incompatibleIsEmpty", "path": "/umpire/fields/count" }
+        {
+          "code": "incompatibleIsEmpty",
+          "path": "/umpire/fields/count"
+        }
       ]
     },
     {
@@ -253,7 +311,11 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "config": { "type": "object", "properties": {}, "additionalProperties": false }
+            "config": {
+              "type": "object",
+              "properties": {},
+              "additionalProperties": false
+            }
           },
           "required": [],
           "additionalProperties": false
@@ -261,13 +323,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "config": { "isEmpty": "string" }
+            "config": {
+              "isEmpty": "string"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "incompatibleIsEmpty", "path": "/umpire/fields/config" }
+        {
+          "code": "incompatibleIsEmpty",
+          "path": "/umpire/fields/config"
+        }
       ]
     },
     {
@@ -280,7 +347,9 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "item": { "$ref": "#/definitions/Item" }
+            "item": {
+              "$ref": "#/definitions/Item"
+            }
           },
           "required": [],
           "additionalProperties": false
@@ -288,13 +357,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "item": { "isEmpty": "present" }
+            "item": {
+              "isEmpty": "present"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "invalidReference", "path": "/valueSchema/properties/item/$ref" }
+        {
+          "code": "invalidReference",
+          "path": "/valueSchema/properties/item/$ref"
+        }
       ]
     },
     {
@@ -307,7 +381,9 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "item": { "$ref": "https://example.com/schema#/$defs/Item" }
+            "item": {
+              "$ref": "https://example.com/schema#/$defs/Item"
+            }
           },
           "required": [],
           "additionalProperties": false
@@ -315,13 +391,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "item": { "isEmpty": "present" }
+            "item": {
+              "isEmpty": "present"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "invalidReference", "path": "/valueSchema/properties/item/$ref" }
+        {
+          "code": "invalidReference",
+          "path": "/valueSchema/properties/item/$ref"
+        }
       ]
     },
     {
@@ -334,7 +415,10 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "count": { "type": "integer", "minimum": 0 }
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            }
           },
           "required": [],
           "additionalProperties": false
@@ -342,13 +426,19 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "count": { "isEmpty": "number", "default": -1 }
+            "count": {
+              "isEmpty": "number",
+              "default": -1
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "invalidDefault", "path": "/umpire/fields/count/default" }
+        {
+          "code": "invalidDefault",
+          "path": "/umpire/fields/count/default"
+        }
       ]
     },
     {
@@ -360,7 +450,9 @@
         "valueSchema": {
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "array",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "umpire": {
           "version": 1,
@@ -369,7 +461,10 @@
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "invalidProfile", "path": "/valueSchema" }
+        {
+          "code": "invalidProfile",
+          "path": "/valueSchema"
+        }
       ]
     },
     {
@@ -384,8 +479,30 @@
           "properties": {
             "flag": {
               "oneOf": [
-                { "type": "object", "properties": { "kind": { "const": true } }, "required": ["kind"], "additionalProperties": false },
-                { "type": "object", "properties": { "kind": { "const": false } }, "required": ["kind"], "additionalProperties": false }
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "const": false
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ],
+                  "additionalProperties": false
+                }
               ]
             }
           },
@@ -395,13 +512,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "flag": { "isEmpty": "present" }
+            "flag": {
+              "isEmpty": "present"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "invalidDiscriminator", "path": "/valueSchema/properties/flag/oneOf" }
+        {
+          "code": "invalidDiscriminator",
+          "path": "/valueSchema/properties/flag/oneOf"
+        }
       ]
     },
     {
@@ -414,7 +536,9 @@
           "$schema": "https://json-schema.org/draft/2020-12/schema",
           "type": "object",
           "properties": {
-            "a": { "$ref": "#/$defs/A" }
+            "a": {
+              "$ref": "#/$defs/A"
+            }
           },
           "required": [],
           "additionalProperties": false,
@@ -422,7 +546,9 @@
             "A": {
               "type": "object",
               "properties": {
-                "child": { "$ref": "#/$defs/B" }
+                "child": {
+                  "$ref": "#/$defs/B"
+                }
               },
               "required": [],
               "additionalProperties": false
@@ -430,7 +556,9 @@
             "B": {
               "type": "object",
               "properties": {
-                "parent": { "$ref": "#/$defs/A" }
+                "parent": {
+                  "$ref": "#/$defs/A"
+                }
               },
               "required": [],
               "additionalProperties": false
@@ -440,13 +568,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "a": { "isEmpty": "present" }
+            "a": {
+              "isEmpty": "present"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "referenceCycle", "path": "/valueSchema/$defs/B" }
+        {
+          "code": "referenceCycle",
+          "path": "/valueSchema/$defs/B"
+        }
       ]
     },
     {
@@ -463,14 +596,34 @@
               "oneOf": [
                 {
                   "type": "object",
-                  "properties": { "kind": { "const": "run" }, "cmd": { "type": "string" } },
-                  "required": ["kind", "cmd"],
+                  "properties": {
+                    "kind": {
+                      "const": "run"
+                    },
+                    "cmd": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "cmd"
+                  ],
                   "additionalProperties": false
                 },
                 {
                   "type": "object",
-                  "properties": { "type": { "const": "manual" }, "desc": { "type": "string" } },
-                  "required": ["type", "desc"],
+                  "properties": {
+                    "type": {
+                      "const": "manual"
+                    },
+                    "desc": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "desc"
+                  ],
                   "additionalProperties": false
                 }
               ]
@@ -482,13 +635,18 @@
         "umpire": {
           "version": 1,
           "fields": {
-            "cmd": { "isEmpty": "present" }
+            "cmd": {
+              "isEmpty": "present"
+            }
           },
           "rules": []
         }
       },
       "expectedDefinitionIssues": [
-        { "code": "invalidDiscriminator", "path": "/valueSchema/properties/cmd/oneOf" }
+        {
+          "code": "invalidDiscriminator",
+          "path": "/valueSchema/properties/cmd/oneOf"
+        }
       ]
     }
   ]

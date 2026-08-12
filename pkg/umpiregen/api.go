@@ -30,9 +30,9 @@ func GenerateProfile(profileJSON []byte, cfg Config) (source string, issues []De
 		return "", nil, fmt.Errorf("parse profile: %w", err)
 	}
 
-	source, err = generateFromBytes(result.Profile.UmpireJSON, cfg)
+	source, err = generateStructural(result.Profile.UmpireJSON, result.Profile.ValueSchemaJSON, cfg)
 	if err != nil {
-		return "", result.Issues, fmt.Errorf("generate from profile umpire: %w", err)
+		return "", result.Issues, fmt.Errorf("generate from profile: %w", err)
 	}
 
 	return source, result.Issues, nil
@@ -47,9 +47,9 @@ func GenerateComposed(umpireJSON, valueSchemaJSON []byte, cfg Config) (source st
 		return "", nil, fmt.Errorf("parse composed profile: %w", err)
 	}
 
-	source, err = generateFromBytes(result.Profile.UmpireJSON, cfg)
+	source, err = generateStructural(result.Profile.UmpireJSON, result.Profile.ValueSchemaJSON, cfg)
 	if err != nil {
-		return "", result.Issues, fmt.Errorf("generate from composed umpire: %w", err)
+		return "", result.Issues, fmt.Errorf("generate from composed profile: %w", err)
 	}
 
 	return source, result.Issues, nil

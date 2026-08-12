@@ -1,5 +1,5 @@
 {
-  "fixtureVersion": 101,
+  "fixtureVersion": 1,
   "id": "avenor-workflow",
   "description": "Avenor-shaped workflow fixture: nodes with tagged-union actions, edges, enums, constants, local $defs, and coexisting Umpire validators.",
   "profile": {
@@ -364,6 +364,9 @@
         ],
         "title": "Build"
       },
+      "conditions": {
+        "allowEdits": false
+      },
       "expectedStructure": {
         "valid": true,
         "issues": []
@@ -382,10 +385,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,
@@ -438,6 +439,9 @@
         "nodes": "not-an-array",
         "title": "Broken"
       },
+      "conditions": {
+        "allowEdits": false
+      },
       "expectedStructure": {
         "valid": false,
         "issues": [
@@ -462,10 +466,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,
@@ -525,6 +527,9 @@
           }
         ]
       },
+      "conditions": {
+        "allowEdits": false
+      },
       "expectedStructure": {
         "valid": false,
         "issues": [
@@ -549,10 +554,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,
@@ -640,6 +643,9 @@
         ],
         "title": "Test"
       },
+      "conditions": {
+        "allowEdits": false
+      },
       "expectedStructure": {
         "valid": true,
         "issues": []
@@ -658,10 +664,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,
@@ -723,6 +727,9 @@
         "title": "Test",
         "workflowType": null
       },
+      "conditions": {
+        "allowEdits": false
+      },
       "expectedStructure": {
         "valid": false,
         "issues": [
@@ -747,10 +754,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,
@@ -1009,10 +1014,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,
@@ -1209,6 +1212,9 @@
         "nodes": [],
         "title": "Test"
       },
+      "conditions": {
+        "allowEdits": false
+      },
       "expectedStructure": {
         "valid": false,
         "issues": [
@@ -1233,10 +1239,8 @@
           "satisfied": false,
           "fair": true,
           "required": false,
-          "reason": "Edges must accompany nodes",
-          "reasons": [
-            "Edges must accompany nodes"
-          ]
+          "reason": null,
+          "reasons": []
         },
         "title": {
           "enabled": true,

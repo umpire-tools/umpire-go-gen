@@ -78,6 +78,23 @@ func TestGenerateSampleSchema(t *testing.T) {
 	}
 }
 
+func TestApplyTypeOverrides(t *testing.T) {
+	fields := []FieldTypeInfo{
+		{Name: "title", GoType: GoString},
+		{Name: "nodes", GoType: GoStringSlice},
+	}
+	got := applyTypeOverrides(fields, map[string]GoType{
+		"title": "*string",
+		"nodes": "*[]Node",
+	})
+	if got[0].GoType != "*string" || got[1].GoType != "*[]Node" {
+		t.Fatalf("overrides not applied: %+v", got)
+	}
+	if fields[0].GoType != GoString || fields[1].GoType != GoStringSlice {
+		t.Fatalf("applyTypeOverrides mutated input: %+v", fields)
+	}
+}
+
 func TestGenerateNoRulesEmitsCompilingCheckAndChallenge(t *testing.T) {
 	s := &schema.Schema{
 		Fields: []schema.FieldDef{

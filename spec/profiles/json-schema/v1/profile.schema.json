@@ -6,7 +6,7 @@
   "type": "object",
   "properties": {
     "$schema": {
- "const": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json"
+      "const": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json"
     },
     "profileVersion": {
       "const": 1
@@ -16,22 +16,31 @@
       "description": "JSON Schema 2020-12 document describing structural constraints on the runtime value.",
       "properties": {
         "$schema": {
-   "const": "https://json-schema.org/draft/2020-12/schema"
+          "const": "https://json-schema.org/draft/2020-12/schema"
         }
       },
-      "required": ["$schema"]
+      "required": [
+        "$schema"
+      ]
     },
     "umpire": {
       "type": "object",
       "description": "Umpire availability document (version 1). Validated against the Umpire draft-07 meta-schema separately.",
       "properties": {
         "version": {
-   "const": 1
+          "const": 1
         }
       },
-      "required": ["version"]
+      "required": [
+        "version"
+      ]
     }
   },
-  "required": ["$schema", "profileVersion", "valueSchema", "umpire"],
+  "required": [
+    "$schema",
+    "profileVersion",
+    "valueSchema",
+    "umpire"
+  ],
   "additionalProperties": false
 }

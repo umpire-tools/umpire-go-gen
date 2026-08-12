@@ -19,9 +19,13 @@ const (
 	GoMap          GoType = "map[string]any"
 )
 
-// Nullable reports whether this GoType is a pointer type.
+// Nullable reports whether this GoType is a pointer type. Named structural pointer
+// types (e.g. *WorkflowType, *Action) are recognized via the leading "*" prefix.
 func (t GoType) Nullable() bool {
-	return t == GoStringPtr || t == GoBoolPtr || t == GoIntPtr || t == GoFloat64Ptr
+	if t == GoStringPtr || t == GoBoolPtr || t == GoIntPtr || t == GoFloat64Ptr {
+		return true
+	}
+	return len(t) > 0 && t[0] == '*'
 }
 
 // Base returns the non-pointer base type.
@@ -36,6 +40,9 @@ func (t GoType) Base() GoType {
 	case GoFloat64Ptr:
 		return GoFloat64
 	default:
+		if len(t) > 0 && t[0] == '*' {
+			return t[1:]
+		}
 		return t
 	}
 }

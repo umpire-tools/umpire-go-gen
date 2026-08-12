@@ -720,8 +720,8 @@ func TestParseProfileFailureFixtures(t *testing.T) {
 
 	var failures struct {
 		Failures []struct {
-			ID                      string             `json:"id"`
-			Profile                 json.RawMessage    `json:"profile"`
+			ID                       string            `json:"id"`
+			Profile                  json.RawMessage   `json:"profile"`
 			ExpectedDefinitionIssues []json.RawMessage `json:"expectedDefinitionIssues"`
 		} `json:"failures"`
 	}
