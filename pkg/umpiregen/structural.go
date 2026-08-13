@@ -2,6 +2,9 @@ package umpiregen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"sort"
 	"strings"
 
@@ -14,7 +17,9 @@ import (
 // Check and Challenge use the richer root field types.
 // Inputs without a value schema retain the existing availability-only output.
 func generateStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, error) {
-	if src, ok, _ := tryStructural(umpireJSON, valueSchemaJSON, cfg); ok {
+	if src, ok, err := tryStructural(umpireJSON, valueSchemaJSON, cfg); err != nil {
+		return "", err
+	} else if ok {
 		return src, nil
 	}
 	// The valueSchema could not be mapped to structural types (e.g. it contains
@@ -107,8 +112,12 @@ func mergePackageFiles(sources ...string) (string, error) {
 	var importSet []string
 	var bodies []string
 	importSeen := make(map[string]bool)
+	declarations := make(map[string]bool)
 
 	for _, src := range sources {
+		if err := collectTopLevelDeclarations(src, declarations); err != nil {
+			return "", err
+		}
 		p, imports, body, err := splitPackageFile(src)
 		if err != nil {
 			return "", err
@@ -140,6 +149,42 @@ func mergePackageFiles(sources ...string) (string, error) {
 	}
 	b.WriteString(strings.Join(bodies, "\n\n"))
 	return b.String(), nil
+}
+
+// collectTopLevelDeclarations rejects names that would be redeclared after the
+// generated files are merged. Structural and availability sources independently
+// use schema-derived names, so an invalid profile can otherwise produce source
+// that parses but cannot compile.
+func collectTopLevelDeclarations(src string, seen map[string]bool) error {
+	file, err := parser.ParseFile(token.NewFileSet(), "generated.go", src, 0)
+	if err != nil {
+		return fmt.Errorf("parse generated source: %w", err)
+	}
+	for _, decl := range file.Decls {
+		var names []*ast.Ident
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			if decl.Recv == nil {
+				names = append(names, decl.Name)
+			}
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					names = append(names, spec.Name)
+				case *ast.ValueSpec:
+					names = append(names, spec.Names...)
+				}
+			}
+		}
+		for _, name := range names {
+			if seen[name.Name] {
+				return fmt.Errorf("cannot merge duplicate declaration %q", name.Name)
+			}
+			seen[name.Name] = true
+		}
+	}
+	return nil
 }
 
 // splitPackageFile splits a generated Go source into package name, its import

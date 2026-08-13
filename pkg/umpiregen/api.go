@@ -23,7 +23,8 @@ func Generate(schemaJSON []byte, cfg Config) (string, error) {
 // GenerateProfile reads a canonical profile document (valueSchema + umpire inline)
 // and emits a Go source file from the embedded umpire availability document.
 // Definition issues (excluded keywords, field mismatches, etc.) are returned
-// alongside the generated source and do not prevent generation.
+// alongside generated source, or alongside an error when the profile cannot
+// produce compilable merged output.
 func GenerateProfile(profileJSON []byte, cfg Config) (source string, issues []DefinitionIssue, err error) {
 	result, err := ParseProfile(profileJSON)
 	if err != nil {
@@ -40,7 +41,8 @@ func GenerateProfile(profileJSON []byte, cfg Config) (source string, issues []De
 
 // GenerateComposed reads separately supplied umpire and value-schema documents
 // and emits a Go source file from the umpire availability document.
-// Definition issues are validated across both documents.
+// Definition issues are validated across both documents and may accompany an
+// error when the documents cannot produce compilable merged output.
 func GenerateComposed(umpireJSON, valueSchemaJSON []byte, cfg Config) (source string, issues []DefinitionIssue, err error) {
 	result, err := ParseComposed(umpireJSON, valueSchemaJSON)
 	if err != nil {

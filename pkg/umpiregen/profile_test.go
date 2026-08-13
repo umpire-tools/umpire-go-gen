@@ -2,8 +2,10 @@ package umpiregen
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -312,6 +314,36 @@ func TestParseProfile_FieldMismatchExtra(t *testing.T) {
 	assertHasIssue(t, result.Issues, "fieldMismatch", "/valueSchema")
 }
 
+func TestParseProfile_FieldMismatchValueSchemaExtra(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"title": { "type": "string" },
+				"schemaOnly": { "type": "boolean" }
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"title": { "isEmpty": "string" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "fieldMismatch", "/valueSchema")
+}
+
 func TestParseProfile_IncompatibleIsEmpty(t *testing.T) {
 	data := `{
 		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
@@ -341,6 +373,38 @@ func TestParseProfile_IncompatibleIsEmpty(t *testing.T) {
 	assertHasIssue(t, result.Issues, "incompatibleIsEmpty", "/umpire/fields/count")
 }
 
+func TestParseProfile_IncompatibleIsEmptyResolvedLocalReference(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"value": { "$ref": "#/$defs/text" }
+			},
+			"required": [],
+			"additionalProperties": false,
+			"$defs": {
+				"text": { "type": "string" }
+			}
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"value": { "isEmpty": "number" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "incompatibleIsEmpty", "/umpire/fields/value")
+}
+
 func TestParseProfile_InvalidReferenceBadFormat(t *testing.T) {
 	data := `{
 		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
@@ -353,6 +417,38 @@ func TestParseProfile_InvalidReferenceBadFormat(t *testing.T) {
 			},
 			"required": [],
 			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"item": { "isEmpty": "present" }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidReference", "/valueSchema/properties/item/$ref")
+}
+
+func TestParseProfile_MissingLocalReferenceTarget(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"item": { "$ref": "#/$defs/Missing" }
+			},
+			"required": [],
+			"additionalProperties": false,
+			"$defs": {
+				"Present": { "type": "string" }
+			}
 		},
 		"umpire": {
 			"version": 1,
@@ -489,6 +585,164 @@ func TestParseProfile_DefaultWithMinMax(t *testing.T) {
 		t.Fatalf("ParseProfile() error: %v", err)
 	}
 	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/count/default")
+}
+
+func TestParseProfile_DefaultConstraintsThroughLocalReference(t *testing.T) {
+	tests := []struct {
+		name        string
+		schema      string
+		defaultJSON string
+		valid       bool
+	}{
+		{name: "type", schema: `{"type":"string"}`, defaultJSON: `7`},
+		{name: "enum", schema: `{"type":"string","enum":["draft","ready"]}`, defaultJSON: `"other"`},
+		{name: "const", schema: `{"type":"boolean","const":true}`, defaultJSON: `false`},
+		{name: "valid number", schema: `{"type":"number"}`, defaultJSON: `1.5`, valid: true},
+		{name: "valid boolean", schema: `{"type":"boolean"}`, defaultJSON: `true`, valid: true},
+		{name: "minimum", schema: `{"type":"number","minimum":2}`, defaultJSON: `1.5`},
+		{name: "maximum", schema: `{"type":"number","maximum":2}`, defaultJSON: `2.5`},
+		{name: "exclusiveMinimum", schema: `{"type":"number","exclusiveMinimum":2}`, defaultJSON: `2`},
+		{name: "exclusiveMaximum", schema: `{"type":"number","exclusiveMaximum":2}`, defaultJSON: `2`},
+		{name: "minLength", schema: `{"type":"string","minLength":2}`, defaultJSON: `"x"`},
+		{name: "maxLength", schema: `{"type":"string","maxLength":2}`, defaultJSON: `"xxx"`},
+		{name: "safeInteger lower boundary", schema: `{"type":"integer"}`, defaultJSON: `-9007199254740991`, valid: true},
+		{name: "safeInteger upper boundary", schema: `{"type":"integer"}`, defaultJSON: `9007199254740991`, valid: true},
+		{name: "safeInteger", schema: `{"type":"integer"}`, defaultJSON: `9007199254740992`},
+		{name: "object base contract", schema: `{"type":"object","properties":{},"additionalProperties":false}`, defaultJSON: `{}`},
+		{name: "array base contract", schema: `{"type":"array","items":{"type":"string"}}`, defaultJSON: `[]`},
+		{name: "irrelevant keyword tolerated", schema: `{"type":"string","contains":{"type":"string"},"unevaluatedProperties":false}`, defaultJSON: `"ok"`, valid: true},
+		{
+			name:        "valid complete constraints",
+			schema:      `{"type":"string","enum":["ok","yes"],"const":"ok","minLength":2,"maxLength":2}`,
+			defaultJSON: `"ok"`,
+			valid:       true,
+		},
+		{
+			name:        "valid exclusive bounds",
+			schema:      `{"type":"integer","minimum":1,"maximum":9,"exclusiveMinimum":1,"exclusiveMaximum":9}`,
+			defaultJSON: `5`,
+			valid:       true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := parseProfileDefaultFixture(t, test.schema, test.defaultJSON)
+			if test.valid {
+				if len(result.Issues) != 0 {
+					t.Fatalf("valid default returned issues: %+v", result.Issues)
+				}
+				return
+			}
+			if len(result.Issues) != 1 {
+				t.Fatalf("invalid default issues = %+v, want exactly one", result.Issues)
+			}
+			assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/value/default")
+		})
+	}
+}
+
+func TestParseProfile_DefinitionIssuesAreDedupedAndSorted(t *testing.T) {
+	data := `{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"type":"object",
+			"properties":{
+				"a":{"type":"integer","pattern":"ignored"},
+				"schemaOnly":{"type":"string"}
+			},
+			"required":[],
+			"additionalProperties":false
+		},
+		"umpire":{
+			"version":1,
+			"fields":{
+				"a":{"isEmpty":"number","default":"wrong"},
+				"umpireOnly":{"isEmpty":"string"}
+			},
+			"rules":[]
+		}
+	}`
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	want := []DefinitionIssue{
+		{Code: "invalidDefault", Path: "/umpire/fields/a/default"},
+		{Code: "fieldMismatch", Path: "/valueSchema"},
+		{Code: "unsupportedKeyword", Path: "/valueSchema/properties/a/pattern"},
+	}
+	if !reflect.DeepEqual(result.Issues, want) {
+		t.Fatalf("definition issues = %+v, want %+v", result.Issues, want)
+	}
+}
+
+func TestParseProfile_DefaultOneOfPrimitiveInvalid(t *testing.T) {
+	data := `{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"value": {
+					"oneOf": [
+						{
+							"type": "object",
+							"properties": { "kind": { "const": "a" } },
+							"required": ["kind"],
+							"additionalProperties": false
+						},
+						{
+							"type": "object",
+							"properties": { "kind": { "const": "b" } },
+							"required": ["kind"],
+							"additionalProperties": false
+						}
+					]
+				}
+			},
+			"required": [],
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": {
+				"value": { "isEmpty": "present", "default": true }
+			},
+			"rules": []
+		}
+	}`
+
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/value/default")
+}
+
+func parseProfileDefaultFixture(t *testing.T, referencedSchema, defaultJSON string) *ProfileResult {
+	t.Helper()
+	data := fmt.Sprintf(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"type":"object",
+			"properties":{"value":{"$ref":"#/$defs/rule"}},
+			"required":[],
+			"additionalProperties":false,
+			"$defs":{"rule":%s}
+		},
+		"umpire":{"version":1,"fields":{"value":{"isEmpty":"present","default":%s}},"rules":[]}
+	}`, referencedSchema, defaultJSON)
+	result, err := ParseProfile([]byte(data))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	return result
 }
 
 func TestParseProfile_ReferenceCycle(t *testing.T) {
@@ -922,9 +1176,13 @@ func TestParseProfile_RefInOneOfCycleDetection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseProfile() error: %v", err)
 	}
-	// Both A and B are in the cycle.
-	assertHasIssue(t, result.Issues, "referenceCycle", "/valueSchema/$defs/A")
-	assertHasIssue(t, result.Issues, "referenceCycle", "/valueSchema/$defs/B")
+	want := []DefinitionIssue{{Code: "referenceCycle", Path: "/valueSchema/$defs/B"}}
+	if len(result.Issues) != len(want) {
+		t.Fatalf("issues length = %d, want %d: %+v", len(result.Issues), len(want), result.Issues)
+	}
+	if !reflect.DeepEqual(result.Issues, want) {
+		t.Fatalf("issues = %+v, want %+v", result.Issues, want)
+	}
 }
 
 // TestParseProfile_ExcludedKeywordUnevaluatedProperties recurses into

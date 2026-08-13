@@ -1,8 +1,11 @@
 package umpiregen
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -71,7 +74,7 @@ func ParseProfile(data []byte) (*ProfileResult, error) {
 
 	return &ProfileResult{
 		Profile: &Profile{UmpireJSON: umpireJSON, ValueSchemaJSON: valueSchemaJSON},
-		Issues:  issues,
+		Issues:  dedupeDefinitionIssues(issues),
 	}, nil
 }
 
@@ -99,7 +102,7 @@ func ParseComposed(umpireJSON, valueSchemaJSON []byte) (*ProfileResult, error) {
 
 	return &ProfileResult{
 		Profile: &Profile{UmpireJSON: umpireJSON, ValueSchemaJSON: valueSchemaJSON},
-		Issues:  issues,
+		Issues:  dedupeDefinitionIssues(issues),
 	}, nil
 }
 
@@ -142,28 +145,30 @@ func validateValueSchema(raw json.RawMessage) []DefinitionIssue {
 
 	issues = append(issues, checkExcludedKeywords("", doc)...)
 
+	var defs map[string]json.RawMessage
+	if defsRaw, ok := doc["$defs"]; ok {
+		_ = json.Unmarshal(defsRaw, &defs)
+	}
+
 	if propsRaw, ok := doc["properties"]; ok {
 		var props map[string]json.RawMessage
 		if json.Unmarshal(propsRaw, &props) == nil {
 			for name, propRaw := range props {
-				issues = append(issues, validatePropertySchema("/properties/"+name, propRaw)...)
+				issues = append(issues, validatePropertySchema("/properties/"+name, propRaw, defs)...)
 			}
 		}
 	}
 
-	if defsRaw, ok := doc["$defs"]; ok {
-		var defs map[string]json.RawMessage
-		if json.Unmarshal(defsRaw, &defs) == nil {
-			refGraph := buildRefGraph(defs)
-			for _, p := range detectCycles(refGraph) {
-				issues = append(issues, DefinitionIssue{
-					Code: "referenceCycle",
-					Path: fmt.Sprintf("/valueSchema/$defs/%s", p),
-				})
-			}
-			for name, defRaw := range defs {
-				issues = append(issues, validatePropertySchema("/$defs/"+name, defRaw)...)
-			}
+	if defs != nil {
+		refGraph := buildRefGraph(defs)
+		for _, p := range detectCycles(refGraph) {
+			issues = append(issues, DefinitionIssue{
+				Code: "referenceCycle",
+				Path: fmt.Sprintf("/valueSchema/$defs/%s", p),
+			})
+		}
+		for name, defRaw := range defs {
+			issues = append(issues, validatePropertySchema("/$defs/"+name, defRaw, defs)...)
 		}
 	}
 	return issues
@@ -187,7 +192,7 @@ func checkExcludedKeywords(prefix string, obj map[string]json.RawMessage) []Defi
 	return issues
 }
 
-func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssue {
+func validatePropertySchema(prefix string, raw json.RawMessage, rootDefs map[string]json.RawMessage) []DefinitionIssue {
 	var issues []DefinitionIssue
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
@@ -198,7 +203,12 @@ func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssu
 
 	if refRaw, ok := obj["$ref"]; ok {
 		var ref string
-		if json.Unmarshal(refRaw, &ref) == nil && !strings.HasPrefix(ref, "#/$defs/") {
+		targetExists := false
+		if json.Unmarshal(refRaw, &ref) == nil && strings.HasPrefix(ref, "#/$defs/") {
+			target := strings.TrimPrefix(ref, "#/$defs/")
+			_, targetExists = rootDefs[target]
+		}
+		if !targetExists {
 			issues = append(issues, DefinitionIssue{
 				Code: "invalidReference",
 				Path: fmt.Sprintf("/valueSchema%s/$ref", prefix),
@@ -214,7 +224,7 @@ func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssu
 	recurseKeys := []string{"items", "contains", "unevaluatedItems", "if", "then", "else", "unevaluatedProperties"}
 	for _, key := range recurseKeys {
 		if subRaw, ok := obj[key]; ok {
-			issues = append(issues, validatePropertySchema(prefix+"/"+key, subRaw)...)
+			issues = append(issues, validatePropertySchema(prefix+"/"+key, subRaw, rootDefs)...)
 		}
 	}
 
@@ -222,7 +232,7 @@ func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssu
 		var pi []json.RawMessage
 		if json.Unmarshal(piRaw, &pi) == nil {
 			for i, item := range pi {
-				issues = append(issues, validatePropertySchema(fmt.Sprintf("%s/prefixItems/%d", prefix, i), item)...)
+				issues = append(issues, validatePropertySchema(fmt.Sprintf("%s/prefixItems/%d", prefix, i), item, rootDefs)...)
 			}
 		}
 	}
@@ -231,7 +241,7 @@ func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssu
 		var props map[string]json.RawMessage
 		if json.Unmarshal(propsRaw, &props) == nil {
 			for name, propRaw := range props {
-				issues = append(issues, validatePropertySchema(prefix+"/properties/"+name, propRaw)...)
+				issues = append(issues, validatePropertySchema(prefix+"/properties/"+name, propRaw, rootDefs)...)
 			}
 		}
 	}
@@ -240,7 +250,7 @@ func validatePropertySchema(prefix string, raw json.RawMessage) []DefinitionIssu
 		var defs map[string]json.RawMessage
 		if json.Unmarshal(defsRaw, &defs) == nil {
 			for name, defRaw := range defs {
-				issues = append(issues, validatePropertySchema(prefix+"/$defs/"+name, defRaw)...)
+				issues = append(issues, validatePropertySchema(prefix+"/$defs/"+name, defRaw, rootDefs)...)
 			}
 		}
 	}
@@ -408,55 +418,50 @@ func detectCycles(graph map[string][]string) []string {
 		gray
 		black
 	)
-	colors := make(map[string]color)
+	colors := make(map[string]color, len(graph))
+	names := make([]string, 0, len(graph))
 	for name := range graph {
 		colors[name] = white
+		names = append(names, name)
 	}
+	sort.Strings(names)
+
+	// Report the definition containing the reference that closes a cycle. This
+	// is deterministic and pinpoints the offending $ref without reporting every
+	// definition already on the active traversal stack.
 	var cycles []string
 	seen := make(map[string]bool)
-
-	var dfs func(string, []string)
-	dfs = func(node string, path []string) {
-		if colors[node] == gray {
-			if len(path) > 0 && !seen[path[len(path)-1]] {
-				seen[path[len(path)-1]] = true
-				cycles = append(cycles, path[len(path)-1])
-			}
-			if !seen[node] {
-				seen[node] = true
-				cycles = append(cycles, node)
-			}
-			return
-		}
-		if colors[node] == black {
-			return
-		}
+	var dfs func(string)
+	dfs = func(node string) {
 		colors[node] = gray
-		for _, neighbor := range graph[node] {
-			dfs(neighbor, append(path, node))
+		neighbors := append([]string(nil), graph[node]...)
+		sort.Strings(neighbors)
+		for _, neighbor := range neighbors {
+			switch colors[neighbor] {
+			case gray:
+				if !seen[node] {
+					seen[node] = true
+					cycles = append(cycles, node)
+				}
+			case white:
+				dfs(neighbor)
+			}
 		}
 		colors[node] = black
 	}
-	for name := range graph {
+	for _, name := range names {
 		if colors[name] == white {
-			dfs(name, nil)
+			dfs(name)
 		}
 	}
 	return cycles
 }
 
-type vsSchemaProp struct {
-	Type    string   `json:"type"`
-	Minimum *float64 `json:"minimum,omitempty"`
-	Maximum *float64 `json:"maximum,omitempty"`
-	MinLen  *float64 `json:"minLength,omitempty"`
-	MaxLen  *float64 `json:"maxLength,omitempty"`
-}
-
 func validateCrossFields(valueSchemaRaw, umpireRaw json.RawMessage) []DefinitionIssue {
 	var issues []DefinitionIssue
 	var vs struct {
-		Properties map[string]vsSchemaProp `json:"properties"`
+		Properties map[string]json.RawMessage `json:"properties"`
+		Defs       map[string]json.RawMessage `json:"$defs"`
 	}
 	if err := json.Unmarshal(valueSchemaRaw, &vs); err != nil {
 		return issues
@@ -473,23 +478,79 @@ func validateCrossFields(valueSchemaRaw, umpireRaw json.RawMessage) []Definition
 	}
 
 	for fieldName, umpDef := range umpire.Fields {
-		vsProp, exists := vs.Properties[fieldName]
+		propRaw, exists := vs.Properties[fieldName]
 		if !exists {
 			issues = append(issues, DefinitionIssue{Code: "fieldMismatch", Path: "/valueSchema"})
 			continue
 		}
+
 		if umpDef.IsEmpty != "" {
-			if issue := checkIsEmptyCompatibility(fieldName, umpDef.IsEmpty, vsProp.Type); issue != nil {
-				issues = append(issues, *issue)
+			if schemaType := resolveLocalSchemaType(propRaw, vs.Defs); schemaType != "" {
+				if issue := checkIsEmptyCompatibility(fieldName, umpDef.IsEmpty, schemaType); issue != nil {
+					issues = append(issues, *issue)
+				}
 			}
 		}
 		if len(umpDef.Default) > 0 {
-			if issue := checkDefaultCompatibility(fieldName, umpDef.Default, vsProp); issue != nil {
+			if issue := checkDefaultCompatibility(fieldName, umpDef.Default, propRaw, vs.Defs); issue != nil {
 				issues = append(issues, *issue)
 			}
 		}
 	}
+	for fieldName := range vs.Properties {
+		if _, exists := umpire.Fields[fieldName]; !exists {
+			issues = append(issues, DefinitionIssue{Code: "fieldMismatch", Path: "/valueSchema"})
+		}
+	}
 	return issues
+}
+
+// resolveLocalSchemaType follows local root $defs references until it finds an
+// explicit type. Missing, external, malformed, and cyclic references have no
+// usable type for cross-field compatibility.
+func resolveLocalSchemaType(raw json.RawMessage, defs map[string]json.RawMessage) string {
+	seen := make(map[string]bool)
+	for {
+		var schema struct {
+			Type string `json:"type"`
+			Ref  string `json:"$ref"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil || schema.Type != "" {
+			return schema.Type
+		}
+		if !strings.HasPrefix(schema.Ref, "#/$defs/") {
+			return ""
+		}
+
+		name := strings.TrimPrefix(schema.Ref, "#/$defs/")
+		if name == "" || seen[name] {
+			return ""
+		}
+		seen[name] = true
+		var ok bool
+		raw, ok = defs[name]
+		if !ok {
+			return ""
+		}
+	}
+}
+
+func dedupeDefinitionIssues(issues []DefinitionIssue) []DefinitionIssue {
+	seen := make(map[DefinitionIssue]bool, len(issues))
+	out := make([]DefinitionIssue, 0, len(issues))
+	for _, issue := range issues {
+		if !seen[issue] {
+			seen[issue] = true
+			out = append(out, issue)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Path != out[j].Path {
+			return out[i].Path < out[j].Path
+		}
+		return out[i].Code < out[j].Code
+	})
+	return out
 }
 
 func checkIsEmptyCompatibility(fieldName, isEmpty, schemaType string) *DefinitionIssue {
@@ -521,57 +582,242 @@ func checkIsEmptyCompatibility(fieldName, isEmpty, schemaType string) *Definitio
 	return nil
 }
 
-func checkDefaultCompatibility(fieldName string, defaultRaw json.RawMessage, prop vsSchemaProp) *DefinitionIssue {
-	var val any
-	if err := json.Unmarshal(defaultRaw, &val); err != nil {
+func checkDefaultCompatibility(fieldName string, defaultRaw, propRaw json.RawMessage, defs map[string]json.RawMessage) *DefinitionIssue {
+	invalid := func() *DefinitionIssue {
 		return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
 	}
-	switch prop.Type {
-	case "string":
-		v, ok := val.(string)
-		if !ok {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		// JSON Schema minLength/maxLength are measured in Unicode code points, so
-		// count runes rather than bytes to avoid false rejects for multi-byte chars.
-		n := utf8.RuneCountInString(v)
-		if prop.MinLen != nil && float64(n) < *prop.MinLen {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		if prop.MaxLen != nil && float64(n) > *prop.MaxLen {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-	case "integer":
-		v, ok := val.(float64)
-		if !ok {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		if v != float64(int64(v)) {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		if prop.Minimum != nil && v < *prop.Minimum {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		if prop.Maximum != nil && v > *prop.Maximum {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-	case "number":
-		v, ok := val.(float64)
-		if !ok {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		if prop.Minimum != nil && v < *prop.Minimum {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-		if prop.Maximum != nil && v > *prop.Maximum {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
-		}
-	case "boolean":
-		if _, ok := val.(bool); !ok {
-			return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
+
+	value, err := decodeJSONNumber(defaultRaw)
+	if err != nil {
+		return invalid()
+	}
+	// Base Umpire v1 permits only primitive defaults. Keep that contract explicit
+	// here even if an object or array property schema would otherwise accept one.
+	switch value.(type) {
+	case map[string]any, []any:
+		return invalid()
+	}
+
+	schemas, ok := resolveLocalSchemaChain(propRaw, defs)
+	if !ok {
+		// Reference validation reports the malformed, missing, or cyclic target.
+		// Avoid manufacturing a second default issue without a usable schema.
+		return nil
+	}
+	for _, schema := range schemas {
+		if !defaultMatchesSchema(value, schema) {
+			return invalid()
 		}
 	}
 	return nil
+}
+
+// resolveLocalSchemaChain returns the property schema followed by each root-$defs
+// target. JSON Schema 2020-12 applies $ref siblings too, so default validation
+// checks every schema object in the chain rather than only the terminal target.
+func resolveLocalSchemaChain(raw json.RawMessage, defs map[string]json.RawMessage) ([]map[string]json.RawMessage, bool) {
+	var schemas []map[string]json.RawMessage
+	seen := make(map[string]bool)
+	for {
+		var schema map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			return nil, false
+		}
+		schemas = append(schemas, schema)
+
+		refRaw, hasRef := schema["$ref"]
+		if !hasRef {
+			return schemas, true
+		}
+		var ref string
+		if json.Unmarshal(refRaw, &ref) != nil || !strings.HasPrefix(ref, "#/$defs/") {
+			return nil, false
+		}
+		target := strings.TrimPrefix(ref, "#/$defs/")
+		if target == "" || seen[target] {
+			return nil, false
+		}
+		seen[target] = true
+		var exists bool
+		raw, exists = defs[target]
+		if !exists {
+			return nil, false
+		}
+	}
+}
+
+func defaultMatchesSchema(value any, schema map[string]json.RawMessage) bool {
+	if !isPrimitiveDefaultSchema(schema) {
+		return false
+	}
+
+	if typeRaw, ok := schema["type"]; ok {
+		var schemaType string
+		if json.Unmarshal(typeRaw, &schemaType) != nil || !defaultMatchesType(value, schemaType) {
+			return false
+		}
+	}
+
+	if enumRaw, ok := schema["enum"]; ok {
+		var candidates []json.RawMessage
+		if json.Unmarshal(enumRaw, &candidates) != nil {
+			return false
+		}
+		matched := false
+		for _, candidateRaw := range candidates {
+			candidate, err := decodeJSONNumber(candidateRaw)
+			if err == nil && equalJSONPrimitive(value, candidate) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+
+	if constRaw, ok := schema["const"]; ok {
+		constant, err := decodeJSONNumber(constRaw)
+		if err != nil || !equalJSONPrimitive(value, constant) {
+			return false
+		}
+	}
+
+	if str, ok := value.(string); ok {
+		length := float64(utf8.RuneCountInString(str))
+		if !meetsLowerBound(length, schema["minLength"], true) || !meetsUpperBound(length, schema["maxLength"], true) {
+			return false
+		}
+	}
+
+	if number, ok := value.(json.Number); ok {
+		v, err := number.Float64()
+		if err != nil || math.IsInf(v, 0) || math.IsNaN(v) {
+			return false
+		}
+		if !meetsLowerBound(v, schema["minimum"], true) ||
+			!meetsUpperBound(v, schema["maximum"], true) ||
+			!meetsLowerBound(v, schema["exclusiveMinimum"], false) ||
+			!meetsUpperBound(v, schema["exclusiveMaximum"], false) {
+			return false
+		}
+	}
+	return true
+}
+
+func isPrimitiveDefaultSchema(schema map[string]json.RawMessage) bool {
+	if typeRaw, ok := schema["type"]; ok {
+		var schemaType string
+		if json.Unmarshal(typeRaw, &schemaType) == nil {
+			if schemaType == "object" || schemaType == "array" {
+				return false
+			}
+		}
+	}
+	for _, key := range []string{"oneOf", "anyOf", "allOf"} {
+		if _, ok := schema[key]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+func defaultMatchesType(value any, schemaType string) bool {
+	switch schemaType {
+	case "string":
+		_, ok := value.(string)
+		return ok
+	case "boolean":
+		_, ok := value.(bool)
+		return ok
+	case "number":
+		n, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		v, err := n.Float64()
+		return err == nil && !math.IsInf(v, 0) && !math.IsNaN(v)
+	case "integer":
+		n, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		v, ok := new(big.Rat).SetString(n.String())
+		if !ok || !v.IsInt() {
+			return false
+		}
+		const maxSafe = int64(9007199254740991)
+		limit := big.NewRat(maxSafe, 1)
+		return v.Cmp(limit) <= 0 && v.Cmp(new(big.Rat).Neg(limit)) >= 0
+	case "object", "array":
+		// Object and array defaults are forbidden by the base Umpire v1 contract.
+		return false
+	default:
+		return false
+	}
+}
+
+func decodeJSONNumber(raw json.RawMessage) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func equalJSONPrimitive(a, b any) bool {
+	an, aNumber := a.(json.Number)
+	bn, bNumber := b.(json.Number)
+	if aNumber || bNumber {
+		if !aNumber || !bNumber {
+			return false
+		}
+		ar, aOK := new(big.Rat).SetString(an.String())
+		br, bOK := new(big.Rat).SetString(bn.String())
+		return aOK && bOK && ar.Cmp(br) == 0
+	}
+	switch av := a.(type) {
+	case nil:
+		return b == nil
+	case string:
+		bv, ok := b.(string)
+		return ok && av == bv
+	case bool:
+		bv, ok := b.(bool)
+		return ok && av == bv
+	default:
+		return false
+	}
+}
+
+func meetsLowerBound(value float64, raw json.RawMessage, inclusive bool) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var bound float64
+	if json.Unmarshal(raw, &bound) != nil || math.IsInf(bound, 0) || math.IsNaN(bound) {
+		return false
+	}
+	if inclusive {
+		return value >= bound
+	}
+	return value > bound
+}
+
+func meetsUpperBound(value float64, raw json.RawMessage, inclusive bool) bool {
+	if len(raw) == 0 {
+		return true
+	}
+	var bound float64
+	if json.Unmarshal(raw, &bound) != nil || math.IsInf(bound, 0) || math.IsNaN(bound) {
+		return false
+	}
+	if inclusive {
+		return value <= bound
+	}
+	return value < bound
 }
 
 func (pr *ProfileResult) IssuesError() error {

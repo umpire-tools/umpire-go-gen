@@ -181,6 +181,42 @@ func TestGenerateProfile_ReturnsIssues(t *testing.T) {
 	}
 }
 
+func TestGenerateProfile_FieldMismatchRejectsDuplicateMergedDeclaration(t *testing.T) {
+	profileJSON := []byte(`{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"fields": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": { "other": { "isEmpty": "string" } },
+			"rules": []
+		}
+	}`)
+
+	// With no schema name, availability's default Fields type clashes with the
+	// structural type inferred for the valueSchema-only "fields" property.
+	// This declared field mismatch must not return non-compilable merged source.
+	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "profile"})
+	if source != "" {
+		t.Fatalf("GenerateProfile() returned source despite merge failure:\n%s", source)
+	}
+	if err == nil || !strings.Contains(err.Error(), `duplicate declaration "Fields"`) {
+		t.Fatalf("GenerateProfile() error = %v, want duplicate Fields declaration", err)
+	}
+	assertHasIssue(t, issues, "fieldMismatch", "/valueSchema")
+}
+
 func TestGenerateProfile_InvalidJSON(t *testing.T) {
 	_, _, err := GenerateProfile([]byte(`{invalid}`), Config{PkgName: "x", SchemaName: "X"})
 	if err == nil || !strings.Contains(err.Error(), "parse profile") {

@@ -70,7 +70,7 @@ func TestGenerateProfileStructural_Avenor(t *testing.T) {
 // TestGenerateComposedStructural composes an umpire vessel with a valueSchema and
 // asserts structural + availability output compiles.
 func TestGenerateComposedStructural(t *testing.T) {
-	umpireJSON := []byte(`{"version":1,"fields":{"title":{"isEmpty":"string","required":true}},"rules":[]}`)
+	umpireJSON := []byte(`{"version":1,"fields":{"title":{"isEmpty":"string","required":true},"workflowType":{"isEmpty":"string"}},"rules":[]}`)
 	valueSchemaJSON := []byte(`{
 		"$schema":"https://json-schema.org/draft/2020-12/schema",
 		"type":"object",
