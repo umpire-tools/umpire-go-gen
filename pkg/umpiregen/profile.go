@@ -232,7 +232,7 @@ func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[strin
 	for _, key := range []string{"title", "description"} {
 		if raw, ok := obj[key]; ok {
 			var value string
-			if json.Unmarshal(raw, &value) != nil {
+			if unmarshalProfileKeyword(raw, &value) != nil {
 				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/" + key})
 			}
 		}
@@ -302,7 +302,7 @@ func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[strin
 		}
 		return issues
 	}
-	if json.Unmarshal(typeRaw, &schemaType) != nil {
+	if unmarshalProfileKeyword(typeRaw, &schemaType) != nil {
 		issuePath := path + "/type"
 		if ctx.root {
 			issuePath = path
@@ -338,12 +338,12 @@ func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[strin
 		var closed bool
 		if rawClosed, ok := obj["additionalProperties"]; !ok {
 			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
-		} else if json.Unmarshal(rawClosed, &closed) != nil || closed {
+		} else if unmarshalProfileKeyword(rawClosed, &closed) != nil || closed {
 			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/additionalProperties"})
 		}
 		if requiredRaw, ok := obj["required"]; ok {
 			var required []string
-			if json.Unmarshal(requiredRaw, &required) != nil {
+			if unmarshalProfileKeyword(requiredRaw, &required) != nil {
 				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/required"})
 			} else {
 				seen := make(map[string]bool, len(required))
@@ -548,7 +548,7 @@ func validateOneOf(prefix string, raw json.RawMessage, rootDefs map[string]json.
 		branchObjects[i] = branch
 		var props map[string]json.RawMessage
 		var required []string
-		if !rawJSONObject(branch["properties"], &props) || json.Unmarshal(branch["required"], &required) != nil {
+		if !rawJSONObject(branch["properties"], &props) || unmarshalProfileKeyword(branch["required"], &required) != nil {
 			invalidDiscriminator = true
 			continue
 		}
@@ -567,7 +567,7 @@ func validateOneOf(prefix string, raw json.RawMessage, rootDefs map[string]json.
 			if constRaw, ok := prop["const"]; ok {
 				branchConstNames[i][name] = true
 				var value string
-				if json.Unmarshal(constRaw, &value) == nil {
+				if unmarshalProfileKeyword(constRaw, &value) == nil {
 					candidates = append(candidates, name)
 					values[name] = value
 				}
@@ -729,7 +729,7 @@ func taggedUnionDiscriminator(branches []json.RawMessage) (string, bool) {
 		var branch map[string]json.RawMessage
 		var props map[string]json.RawMessage
 		var required []string
-		if !rawJSONObject(raw, &branch) || !rawJSONObject(branch["properties"], &props) || json.Unmarshal(branch["required"], &required) != nil {
+		if !rawJSONObject(raw, &branch) || !rawJSONObject(branch["properties"], &props) || unmarshalProfileKeyword(branch["required"], &required) != nil {
 			return "", false
 		}
 		requiredSet := make(map[string]bool, len(required))
@@ -746,7 +746,7 @@ func taggedUnionDiscriminator(branches []json.RawMessage) (string, bool) {
 				continue
 			}
 			var candidate string
-			if json.Unmarshal(prop["const"], &candidate) == nil {
+			if unmarshalProfileKeyword(prop["const"], &candidate) == nil {
 				if name != "" {
 					return "", false
 				}
@@ -787,10 +787,20 @@ func validGeneratedIdentifier(name string) bool {
 }
 
 func rawJSONObject(raw json.RawMessage, out *map[string]json.RawMessage) bool {
-	if len(raw) == 0 || json.Unmarshal(raw, out) != nil || *out == nil {
+	if unmarshalProfileKeyword(raw, out) != nil || *out == nil {
 		return false
 	}
 	return true
+}
+
+// unmarshalProfileKeyword rejects JSON null before decoding a supported keyword.
+// encoding/json otherwise accepts null into strings, booleans, slices, and maps
+// without an error, leaving a zero value that can masquerade as a valid shape.
+func unmarshalProfileKeyword(raw json.RawMessage, out any) error {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return fmt.Errorf("keyword must not be null")
+	}
+	return json.Unmarshal(raw, out)
 }
 
 func sortedRawKeys[V any](values map[string]V) []string {

@@ -752,9 +752,15 @@ func TestParseProfile_ObjectInvariants(t *testing.T) {
 		path   string
 	}{
 		{name: "nested missing explicit type", schema: `{"properties":{},"additionalProperties":false}`, path: "/valueSchema/properties/value"},
+		{name: "nested properties null", schema: `{"type":"object","properties":null,"additionalProperties":false}`, path: "/valueSchema/properties/value"},
 		{name: "nested properties not object", schema: `{"type":"object","properties":[],"additionalProperties":false}`, path: "/valueSchema/properties/value"},
 		{name: "nested not closed", schema: `{"type":"object","properties":{}}`, path: "/valueSchema/properties/value"},
+		{name: "nested additional properties null", schema: `{"type":"object","properties":{},"additionalProperties":null}`, path: "/valueSchema/properties/value/additionalProperties"},
+		{name: "nested additional properties wrong type", schema: `{"type":"object","properties":{},"additionalProperties":0}`, path: "/valueSchema/properties/value/additionalProperties"},
+		{name: "nested required null", schema: `{"type":"object","properties":{},"required":null,"additionalProperties":false}`, path: "/valueSchema/properties/value/required"},
+		{name: "nested required wrong type", schema: `{"type":"object","properties":{},"required":{},"additionalProperties":false}`, path: "/valueSchema/properties/value/required"},
 		{name: "nested required undeclared", schema: `{"type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/required"},
+		{name: "union branch required null", schema: `{"oneOf":[{"type":"object","properties":{"kind":{"const":"a"}},"required":null,"additionalProperties":false},{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, path: "/valueSchema/properties/value/oneOf/0/required"},
 		{name: "union branch not closed", schema: `{"oneOf":[{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true},{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, path: "/valueSchema/properties/value/oneOf/0/additionalProperties"},
 	}
 	for _, test := range tests {
@@ -770,8 +776,12 @@ func TestParseProfile_ObjectInvariants(t *testing.T) {
 		path        string
 	}{
 		{name: "root missing properties", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}`, path: "/valueSchema"},
+		{name: "root properties null", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":null,"additionalProperties":false}`, path: "/valueSchema"},
+		{name: "root additional properties null", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":null}`, path: "/valueSchema/additionalProperties"},
 		{name: "root not closed", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":true}`, path: "/valueSchema/additionalProperties"},
+		{name: "root required null", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"required":null,"additionalProperties":false}`, path: "/valueSchema/required"},
 		{name: "root required undeclared", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/required"},
+		{name: "root defs null", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false,"$defs":null}`, path: "/valueSchema/$defs"},
 		{name: "root union", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false,"oneOf":[]}`, path: "/valueSchema/oneOf"},
 	}
 	for _, test := range rootCases {
@@ -786,6 +796,31 @@ func TestParseProfile_ObjectInvariants(t *testing.T) {
 				code = "unsupportedKeyword"
 			}
 			assertHasIssue(t, result.Issues, code, test.path)
+		})
+	}
+}
+
+func TestParseProfile_MalformedSupportedKeywordShapes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		schema string
+		code   string
+		path   string
+	}{
+		{name: "null title", schema: `{"type":"string","title":null}`, code: "invalidProfile", path: "/valueSchema/properties/value/title"},
+		{name: "wrong title type", schema: `{"type":"string","title":false}`, code: "invalidProfile", path: "/valueSchema/properties/value/title"},
+		{name: "null description", schema: `{"type":"string","description":null}`, code: "invalidProfile", path: "/valueSchema/properties/value/description"},
+		{name: "null type", schema: `{"type":null}`, code: "invalidProfile", path: "/valueSchema/properties/value/type"},
+		{name: "null items", schema: `{"type":"array","items":null}`, code: "invalidProfile", path: "/valueSchema/properties/value/items"},
+		{name: "null enum", schema: `{"type":"string","enum":null}`, code: "invalidProfile", path: "/valueSchema/properties/value/enum"},
+		{name: "null oneOf", schema: `{"oneOf":null}`, code: "invalidDiscriminator", path: "/valueSchema/properties/value/oneOf"},
+		{name: "null minItems", schema: `{"type":"array","items":{"type":"string"},"minItems":null}`, code: "invalidProfile", path: "/valueSchema/properties/value/minItems"},
+		{name: "wrong minLength type", schema: `{"type":"string","minLength":false}`, code: "invalidProfile", path: "/valueSchema/properties/value/minLength"},
+		{name: "null minimum", schema: `{"type":"number","minimum":null}`, code: "unsafeNumber", path: "/valueSchema/properties/value/minimum"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := parseProfileSchemaFixture(t, test.schema, "")
+			assertHasIssue(t, result.Issues, test.code, test.path)
 		})
 	}
 }
