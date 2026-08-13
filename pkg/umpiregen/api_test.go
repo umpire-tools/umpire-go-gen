@@ -297,7 +297,7 @@ func TestGenerateComposed_RejectsDefinitionIssues(t *testing.T) {
 	}
 }
 
-func TestGenerateProfileRejectsGoKeywordWireSpellings(t *testing.T) {
+func TestGenerateProfileAcceptsGoKeywordWireSpellingsAfterConversion(t *testing.T) {
 	profileJSON := []byte(`{
 		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
 		"profileVersion":1,
@@ -309,17 +309,14 @@ func TestGenerateProfileRejectsGoKeywordWireSpellings(t *testing.T) {
 		"umpire":{"version":1,"fields":{"map":{},"func":{},"type":{}},"rules":[]}
 	}`)
 	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "keywords", SchemaName: "Type"})
-	var definitionErr *DefinitionError
-	if source != "" || !errors.As(err, &definitionErr) {
-		t.Fatalf("GenerateProfile() = source %q, issues %+v, err %T %v; want closed DefinitionError", source, issues, err, err)
+	if err != nil {
+		t.Fatalf("GenerateProfile() error: %v", err)
 	}
-	for _, wire := range []string{"func", "map", "type"} {
-		assertHasIssue(t, issues, "invalidName", "/valueSchema/properties/"+wire)
+	if len(issues) != 0 {
+		t.Fatalf("expected keyword wire spellings to be accepted after conversion: %+v", issues)
 	}
-	for _, issue := range issues {
-		if issue.Path == "/generation/schemaName" {
-			t.Fatalf("exported schema name Type must remain valid: %+v", issues)
-		}
+	if !strings.Contains(source, "Type") {
+		t.Fatalf("generated source missing exported Type symbol:\n%s", source)
 	}
 }
 

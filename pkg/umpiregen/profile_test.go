@@ -1369,13 +1369,15 @@ func TestGenerateProfileRejectsGeneratedSymbolCollisions(t *testing.T) {
 	}
 }
 
-func TestGenerateProfileRejectsGoKeywordWireNames(t *testing.T) {
+func TestGenerateProfileAcceptsGoKeywordWireNamesAfterConversion(t *testing.T) {
 	propertyProfile := strings.ReplaceAll(string(profileSchemaFixtureJSON(`{"type":"string"}`, "")), `"value"`, `"type"`)
 	propertyResult, err := ParseProfile([]byte(propertyProfile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertHasIssue(t, propertyResult.Issues, "invalidName", "/valueSchema/properties/type")
+	if len(propertyResult.Issues) != 0 {
+		t.Fatalf("property keyword wire name should be accepted: %+v", propertyResult.Issues)
+	}
 
 	defsProfile := []byte(fmt.Sprintf(`{
 		"$schema":%q,"profileVersion":1,
@@ -1391,7 +1393,9 @@ func TestGenerateProfileRejectsGoKeywordWireNames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertHasIssue(t, defsResult.Issues, "invalidName", "/valueSchema/$defs/type")
+	if len(defsResult.Issues) != 0 {
+		t.Fatalf("defs keyword wire name should be accepted: %+v", defsResult.Issues)
+	}
 }
 
 func TestGenerateProfileRejectsNestedTypeAndGeneratedConstantCollisions(t *testing.T) {

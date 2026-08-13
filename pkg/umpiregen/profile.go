@@ -768,7 +768,7 @@ func validateGoNameCollection(values map[string]json.RawMessage, path string) []
 	collision := false
 	for _, wire := range sortedRawKeys(values) {
 		name := codegen.GoFieldName(wire)
-		if !validGeneratedIdentifier(name) || token.Lookup(wire).IsKeyword() {
+		if !validGeneratedIdentifier(name) {
 			issues = append(issues, DefinitionIssue{Code: "invalidName", Path: path + "/" + escapeProfilePointer(wire)})
 		}
 		if seen[name] {
