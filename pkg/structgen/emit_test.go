@@ -177,6 +177,55 @@ func TestUnionDecode(t *testing.T) {
 	runGenerated(t, vs, "Job", "smoke", testSrc)
 }
 
+func TestEmitUnionMarshalRoundTrip(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"action":{
+				"oneOf":[
+					{"type":"object","properties":{"kind":{"const":"MANUAL"},"XMLParser":{"type":"string"}},"required":["kind","XMLParser"],"additionalProperties":false},
+					{"type":"object","properties":{"kind":{"const":"RUN"},"snake_case":{"type":"array","items":{"type":"integer"}}},"required":["kind","snake_case"],"additionalProperties":false},
+					{"type":"object","properties":{"kind":{"const":"STOP"},"reason":{"type":"string"}},"required":["kind","reason"],"additionalProperties":false}
+				]
+			}
+		},
+		"additionalProperties":false
+	}`
+	testSrc := `
+func TestUnionMarshalRoundTrip(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		input string
+		want string
+	}{
+		{name:"manual", input:"{\"kind\":\"MANUAL\",\"XMLParser\":\"exact-wire\"}", want:"{\"XMLParser\":\"exact-wire\",\"kind\":\"MANUAL\"}"},
+		{name:"run", input:"{\"kind\":\"RUN\",\"snake_case\":[1.0,1e0]}", want:"{\"kind\":\"RUN\",\"snake_case\":[1,1]}"},
+		{name:"stop", input:"{\"kind\":\"STOP\",\"reason\":\"done\"}", want:"{\"kind\":\"STOP\",\"reason\":\"done\"}"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var action DocAction
+			if err := json.Unmarshal([]byte(test.input), &action); err != nil { t.Fatal(err) }
+			encoded, err := json.Marshal(action)
+			if err != nil { t.Fatal(err) }
+			if string(encoded) != test.want { t.Fatalf("wire JSON = %s, want %s", encoded, test.want) }
+			var roundTrip DocAction
+			if err := json.Unmarshal(encoded, &roundTrip); err != nil { t.Fatal(err) }
+			again, err := json.Marshal(roundTrip)
+			if err != nil { t.Fatal(err) }
+			if string(again) != test.want { t.Fatalf("round-trip JSON = %s, want %s", again, test.want) }
+		})
+	}
+}
+
+func TestUnionMarshalRejectsNoSelectedBranch(t *testing.T) {
+	if _, err := json.Marshal(DocAction{}); err == nil { t.Fatal("zero union must not marshal as a fabricated variant") }
+	var branch *DocActionValueMANUAL
+	if _, err := json.Marshal(DocAction{Value: branch}); err == nil { t.Fatal("typed nil branch must not marshal") }
+}
+`
+	runGenerated(t, vs, "Doc", "unionmarshal", testSrc)
+}
+
 func TestEmitObjectEnumTags(t *testing.T) {
 	vs := `{
 		"type":"object",

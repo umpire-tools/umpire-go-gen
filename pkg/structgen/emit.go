@@ -292,7 +292,16 @@ func emitUnionDecoder(b *strings.Builder, _ *Spec, td TypeDef, schemaPrefix stri
 	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
 	fmt.Fprintf(b, "func (u %s) MarshalJSON() ([]byte, error) {\n", td.Name)
-	b.WriteString("\tif u.Value == nil { return []byte(\"null\"), nil }\n")
-	b.WriteString("\treturn json.Marshal(u.Value)\n")
+	fmt.Fprintf(b, "\tif u.Value == nil { return nil, fmt.Errorf(%q) }\n", "cannot marshal zero "+td.Name+": no union branch selected")
+	b.WriteString("\tswitch branch := u.Value.(type) {\n")
+	for _, br := range td.Branches {
+		variant := interfaceName + codegen.GoFieldName(br.Wire)
+		fmt.Fprintf(b, "\tcase *%s:\n", variant)
+		fmt.Fprintf(b, "\t\tif branch == nil { return nil, fmt.Errorf(%q) }\n", "cannot marshal "+td.Name+": selected branch is nil")
+		b.WriteString("\t\treturn json.Marshal(branch)\n")
+	}
+	b.WriteString("\tdefault:\n")
+	fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(%q, u.Value)\n", "cannot marshal "+td.Name+": invalid union branch %T")
+	b.WriteString("\t}\n")
 	b.WriteString("}\n\n")
 }
