@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/token"
 	"math"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/umpire-tools/umpire-go-gen/pkg/codegen"
 )
 
 // ProfileSchemaURI is the required $schema value for a JSON Schema Composition Profile v1.
@@ -44,7 +48,7 @@ func ParseProfile(data []byte) (*ProfileResult, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
-	if err := requireKeys(raw, "$schema", "profileVersion", "valueSchema", "umpire"); err != nil {
+	if err := requireExactKeys(raw, "$schema", "profileVersion", "valueSchema", "umpire"); err != nil {
 		return nil, fmt.Errorf("profile: %w", err)
 	}
 
@@ -128,10 +132,17 @@ func validateVSMeta(raw json.RawMessage) []DefinitionIssue {
 	return issues
 }
 
-func requireKeys(raw map[string]json.RawMessage, keys ...string) error {
+func requireExactKeys(raw map[string]json.RawMessage, keys ...string) error {
+	allowed := make(map[string]bool, len(keys))
 	for _, k := range keys {
+		allowed[k] = true
 		if _, ok := raw[k]; !ok {
 			return fmt.Errorf("missing required key %q", k)
+		}
+	}
+	for key := range raw {
+		if !allowed[key] {
+			return fmt.Errorf("unexpected key %q", key)
 		}
 	}
 	return nil
@@ -151,6 +162,7 @@ func validateValueSchema(raw json.RawMessage) []DefinitionIssue {
 	}
 
 	issues := validateSchemaObject("", raw, defs, schemaValidationContext{root: true})
+	issues = append(issues, validateGoSchemaNames(doc)...)
 	if defs != nil {
 		for _, name := range detectCycles(buildRefGraph(defs)) {
 			issues = append(issues, DefinitionIssue{
@@ -221,14 +233,18 @@ func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[strin
 		// validation siblings would change 2020-12 reference semantics and are
 		// therefore rejected too.
 		if !targetExists || len(obj) != 1 {
-			issues = append(issues, DefinitionIssue{Code: "invalidReference", Path: path + "/$ref"})
+			issuePath := path + "/$ref"
+			if targetExists && len(obj) != 1 {
+				issuePath = path
+			}
+			issues = append(issues, DefinitionIssue{Code: "invalidReference", Path: issuePath})
 		}
 		return issues
 	}
 
 	if oneOfRaw, ok := obj["oneOf"]; ok {
 		if ctx.root {
-			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/oneOf"})
+			issues = append(issues, DefinitionIssue{Code: "unsupportedKeyword", Path: path + "/oneOf"})
 		}
 		issues = append(issues, validateOneOf(prefix, oneOfRaw, rootDefs, !ctx.root)...)
 		if !ctx.root {
@@ -303,8 +319,10 @@ func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[strin
 			return issues
 		}
 		var closed bool
-		if rawClosed, ok := obj["additionalProperties"]; !ok || json.Unmarshal(rawClosed, &closed) != nil || closed {
+		if rawClosed, ok := obj["additionalProperties"]; !ok {
 			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
+		} else if json.Unmarshal(rawClosed, &closed) != nil || closed {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/additionalProperties"})
 		}
 		if requiredRaw, ok := obj["required"]; ok {
 			var required []string
@@ -312,9 +330,9 @@ func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[strin
 				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/required"})
 			} else {
 				seen := make(map[string]bool, len(required))
-				for i, name := range required {
+				for _, name := range required {
 					if seen[name] || props[name] == nil {
-						issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: fmt.Sprintf("%s/required/%d", path, i)})
+						issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/required"})
 					}
 					seen[name] = true
 				}
@@ -472,7 +490,7 @@ func profileLiteralMatchesType(value any, schemaType string) (matches, unsafe bo
 		if !ok {
 			return false, false
 		}
-		rat, ok := new(big.Rat).SetString(n.String())
+		rat, ok := parseJSONRat(n.String())
 		if !ok || !rat.IsInt() {
 			return false, false
 		}
@@ -569,6 +587,184 @@ func validateOneOf(prefix string, raw json.RawMessage, rootDefs map[string]json.
 	return issues
 }
 
+// validateGoSchemaNames enforces the deterministic identifier conversion used
+// by generated Go. Names are rejected rather than repaired or suffixed.
+func validateGoSchemaNames(root map[string]json.RawMessage) []DefinitionIssue {
+	var issues []DefinitionIssue
+	var walk func(map[string]json.RawMessage, string)
+	walk = func(node map[string]json.RawMessage, path string) {
+		if enumRaw, ok := node["enum"]; ok {
+			var values []json.RawMessage
+			if json.Unmarshal(enumRaw, &values) == nil {
+				seen := make(map[string]bool)
+				collision := false
+				for i, raw := range values {
+					var wire string
+					if json.Unmarshal(raw, &wire) != nil {
+						continue // numeric and boolean enums use stable ValueN/True/False names
+					}
+					name := codegen.GoFieldName(wire)
+					if !validGeneratedIdentifier(name) {
+						issues = append(issues, DefinitionIssue{Code: "invalidName", Path: fmt.Sprintf("%s/enum/%d", path, i)})
+					}
+					if seen[name] {
+						collision = true
+					}
+					seen[name] = true
+				}
+				if collision {
+					issues = append(issues, DefinitionIssue{Code: "nameCollision", Path: path + "/enum"})
+				}
+			}
+		}
+
+		if propsRaw, ok := node["properties"]; ok {
+			var props map[string]json.RawMessage
+			if rawJSONObject(propsRaw, &props) {
+				issues = append(issues, validateGoNameCollection(props, path+"/properties")...)
+				for _, wire := range sortedRawKeys(props) {
+					var child map[string]json.RawMessage
+					if rawJSONObject(props[wire], &child) {
+						walk(child, path+"/properties/"+escapeProfilePointer(wire))
+					}
+				}
+			}
+		}
+		if itemsRaw, ok := node["items"]; ok {
+			var items map[string]json.RawMessage
+			if rawJSONObject(itemsRaw, &items) {
+				walk(items, path+"/items")
+			}
+		}
+		if oneOfRaw, ok := node["oneOf"]; ok {
+			var branches []json.RawMessage
+			if json.Unmarshal(oneOfRaw, &branches) == nil && goNameableTaggedUnion(branches) {
+				seenVariants := make(map[string]bool)
+				variantCollision := false
+				for i, raw := range branches {
+					var branch map[string]json.RawMessage
+					if !rawJSONObject(raw, &branch) {
+						continue
+					}
+					walk(branch, fmt.Sprintf("%s/oneOf/%d", path, i))
+					var props map[string]json.RawMessage
+					if !rawJSONObject(branch["properties"], &props) {
+						continue
+					}
+					for propName, propRaw := range props {
+						var prop map[string]json.RawMessage
+						if !rawJSONObject(propRaw, &prop) {
+							continue
+						}
+						constRaw, ok := prop["const"]
+						if !ok {
+							continue
+						}
+						var wire string
+						if json.Unmarshal(constRaw, &wire) != nil {
+							continue
+						}
+						name := codegen.GoFieldName(wire)
+						constPath := fmt.Sprintf("%s/oneOf/%d/properties/%s/const", path, i, escapeProfilePointer(propName))
+						if !validGeneratedIdentifier(name) {
+							issues = append(issues, DefinitionIssue{Code: "invalidName", Path: constPath})
+						}
+						if seenVariants[name] {
+							variantCollision = true
+						}
+						seenVariants[name] = true
+					}
+				}
+				if variantCollision {
+					issues = append(issues, DefinitionIssue{Code: "nameCollision", Path: path + "/oneOf"})
+				}
+			}
+		}
+	}
+
+	walk(root, "/valueSchema")
+	if defsRaw, ok := root["$defs"]; ok {
+		var defs map[string]json.RawMessage
+		if rawJSONObject(defsRaw, &defs) {
+			issues = append(issues, validateGoNameCollection(defs, "/valueSchema/$defs")...)
+			for _, wire := range sortedRawKeys(defs) {
+				var def map[string]json.RawMessage
+				if rawJSONObject(defs[wire], &def) {
+					walk(def, "/valueSchema/$defs/"+escapeProfilePointer(wire))
+				}
+			}
+		}
+	}
+	return issues
+}
+
+func goNameableTaggedUnion(branches []json.RawMessage) bool {
+	if len(branches) == 0 {
+		return false
+	}
+	discriminator := ""
+	seenValues := make(map[string]bool)
+	for _, raw := range branches {
+		var branch map[string]json.RawMessage
+		var props map[string]json.RawMessage
+		var required []string
+		if !rawJSONObject(raw, &branch) || !rawJSONObject(branch["properties"], &props) || json.Unmarshal(branch["required"], &required) != nil {
+			return false
+		}
+		requiredSet := make(map[string]bool, len(required))
+		for _, name := range required {
+			requiredSet[name] = true
+		}
+		name, value := "", ""
+		for propName, propRaw := range props {
+			if !requiredSet[propName] {
+				continue
+			}
+			var prop map[string]json.RawMessage
+			if !rawJSONObject(propRaw, &prop) {
+				continue
+			}
+			var candidate string
+			if json.Unmarshal(prop["const"], &candidate) == nil {
+				if name != "" {
+					return false
+				}
+				name, value = propName, candidate
+			}
+		}
+		if name == "" || discriminator != "" && discriminator != name || seenValues[value] {
+			return false
+		}
+		discriminator = name
+		seenValues[value] = true
+	}
+	return true
+}
+
+func validateGoNameCollection(values map[string]json.RawMessage, path string) []DefinitionIssue {
+	var issues []DefinitionIssue
+	seen := make(map[string]bool, len(values))
+	collision := false
+	for _, wire := range sortedRawKeys(values) {
+		name := codegen.GoFieldName(wire)
+		if !validGeneratedIdentifier(name) {
+			issues = append(issues, DefinitionIssue{Code: "invalidName", Path: path + "/" + escapeProfilePointer(wire)})
+		}
+		if seen[name] {
+			collision = true
+		}
+		seen[name] = true
+	}
+	if collision {
+		issues = append(issues, DefinitionIssue{Code: "nameCollision", Path: path})
+	}
+	return issues
+}
+
+func validGeneratedIdentifier(name string) bool {
+	return token.IsIdentifier(name) && name != "_" && !token.Lookup(strings.ToLower(name)).IsKeyword()
+}
+
 func rawJSONObject(raw json.RawMessage, out *map[string]json.RawMessage) bool {
 	if len(raw) == 0 || json.Unmarshal(raw, out) != nil || *out == nil {
 		return false
@@ -628,7 +824,7 @@ func isNonNegativeProfileCount(raw json.RawMessage) (valid, safe bool) {
 	if err != nil || !ok {
 		return false, false
 	}
-	rat, ok := new(big.Rat).SetString(n.String())
+	rat, ok := parseJSONRat(n.String())
 	if !ok || !rat.IsInt() || rat.Sign() < 0 {
 		return false, false
 	}
@@ -641,7 +837,7 @@ func isProfileSafeNumber(raw json.RawMessage) bool {
 	if err != nil || !ok {
 		return false
 	}
-	rat, ok := new(big.Rat).SetString(n.String())
+	rat, ok := parseJSONRat(n.String())
 	if !ok {
 		return false
 	}
@@ -1042,7 +1238,7 @@ func defaultMatchesType(value any, schemaType string) bool {
 		if !ok {
 			return false
 		}
-		v, ok := new(big.Rat).SetString(n.String())
+		v, ok := parseJSONRat(n.String())
 		if !ok || !v.IsInt() {
 			return false
 		}
@@ -1054,6 +1250,49 @@ func defaultMatchesType(value any, schemaType string) bool {
 	default:
 		return false
 	}
+}
+
+func parseJSONRat(text string) (*big.Rat, bool) {
+	text = strings.TrimSpace(text)
+	negative := strings.HasPrefix(text, "-")
+	if negative {
+		text = text[1:]
+	}
+	exponent := 0
+	if at := strings.IndexAny(text, "eE"); at >= 0 {
+		parsed, err := strconv.Atoi(text[at+1:])
+		if err != nil {
+			return nil, false
+		}
+		exponent = parsed
+		text = text[:at]
+	}
+	fractionDigits := 0
+	if dot := strings.IndexByte(text, '.'); dot >= 0 {
+		fractionDigits = len(text) - dot - 1
+		text = text[:dot] + text[dot+1:]
+	}
+	exponent -= fractionDigits
+	if exponent > 4096 || exponent < -4096 {
+		return nil, false
+	}
+	integer := new(big.Int)
+	if _, ok := integer.SetString(text, 10); !ok {
+		return nil, false
+	}
+	if negative {
+		integer.Neg(integer)
+	}
+	magnitude := exponent
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	power := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(magnitude)), nil)
+	if exponent >= 0 {
+		integer.Mul(integer, power)
+		return new(big.Rat).SetInt(integer), true
+	}
+	return new(big.Rat).SetFrac(integer, power), true
 }
 
 func decodeJSONNumber(raw json.RawMessage) (any, error) {
@@ -1073,8 +1312,8 @@ func equalJSONPrimitive(a, b any) bool {
 		if !aNumber || !bNumber {
 			return false
 		}
-		ar, aOK := new(big.Rat).SetString(an.String())
-		br, bOK := new(big.Rat).SetString(bn.String())
+		ar, aOK := parseJSONRat(an.String())
+		br, bOK := parseJSONRat(bn.String())
 		return aOK && bOK && ar.Cmp(br) == 0
 	}
 	switch av := a.(type) {

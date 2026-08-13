@@ -30,6 +30,11 @@ func GenerateProfile(profileJSON []byte, cfg Config) (source string, issues []De
 	if err != nil {
 		return "", nil, fmt.Errorf("parse profile: %w", err)
 	}
+	nameIssues := generationConfigIssues(result.Profile, cfg)
+	result.Issues = dedupeDefinitionIssues(append(result.Issues, nameIssues...))
+	if len(nameIssues) != 0 {
+		return "", result.Issues, nil
+	}
 
 	source, err = generateStructural(result.Profile.UmpireJSON, result.Profile.ValueSchemaJSON, cfg)
 	if err != nil {
@@ -47,6 +52,11 @@ func GenerateComposed(umpireJSON, valueSchemaJSON []byte, cfg Config) (source st
 	result, err := ParseComposed(umpireJSON, valueSchemaJSON)
 	if err != nil {
 		return "", nil, fmt.Errorf("parse composed profile: %w", err)
+	}
+	nameIssues := generationConfigIssues(result.Profile, cfg)
+	result.Issues = dedupeDefinitionIssues(append(result.Issues, nameIssues...))
+	if len(nameIssues) != 0 {
+		return "", result.Issues, nil
 	}
 
 	source, err = generateStructural(result.Profile.UmpireJSON, result.Profile.ValueSchemaJSON, cfg)

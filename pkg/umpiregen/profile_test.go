@@ -54,6 +54,19 @@ func TestParseProfile_ValidInline(t *testing.T) {
 	}
 }
 
+func TestParseProfileRejectsUnknownCanonicalWrapperMember(t *testing.T) {
+	data := `{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false},
+		"umpire":{"version":1,"fields":{},"rules":[]},
+		"extra":true
+	}`
+	if _, err := ParseProfile([]byte(data)); err == nil || !strings.Contains(err.Error(), `unexpected key "extra"`) {
+		t.Fatalf("ParseProfile() error = %v, want unknown wrapper rejection", err)
+	}
+}
+
 func TestParseProfile_MissingKeys(t *testing.T) {
 	tests := []struct {
 		name string
@@ -613,14 +626,17 @@ func TestParseProfile_UnsupportedAndUntypedSchemaShapes(t *testing.T) {
 
 func TestParseProfile_AcceptsPrimitiveEnumAndConstVocabulary(t *testing.T) {
 	for name, schema := range map[string]string{
-		"string enum":   `{"type":"string","enum":["a","b"]}`,
-		"boolean enum":  `{"type":"boolean","enum":[true,false]}`,
-		"integer enum":  `{"type":"integer","enum":[1,2]}`,
-		"number enum":   `{"type":"number","enum":[1.5,2]}`,
-		"string const":  `{"type":"string","const":"a"}`,
-		"boolean const": `{"type":"boolean","const":true}`,
-		"integer const": `{"type":"integer","const":1}`,
-		"number const":  `{"type":"number","const":1.5}`,
+		"string enum":            `{"type":"string","enum":["a","b"]}`,
+		"boolean enum":           `{"type":"boolean","enum":[true,false]}`,
+		"integer enum":           `{"type":"integer","enum":[1,2]}`,
+		"number enum":            `{"type":"number","enum":[1.5,2]}`,
+		"string const":           `{"type":"string","const":"a"}`,
+		"boolean const":          `{"type":"boolean","const":true}`,
+		"integer const":          `{"type":"integer","const":1}`,
+		"integer decimal const":  `{"type":"integer","const":1.0}`,
+		"integer exponent const": `{"type":"integer","const":1e0}`,
+		"integer exponent enum":  `{"type":"integer","enum":[1e0,2.0]}`,
+		"number const":           `{"type":"number","const":1.5}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			result := parseProfileSchemaFixture(t, schema, "")
@@ -716,8 +732,8 @@ func TestParseProfile_UnionBranchObjectInvariants(t *testing.T) {
 	}{
 		{name: "missing properties", branch: `{"type":"object","required":[],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0"},
 		{name: "non-object properties", branch: `{"type":"object","properties":[],"required":[],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0"},
-		{name: "undeclared required", branch: `{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind","missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0/required/1"},
-		{name: "additional properties true", branch: `{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true}`, path: "/valueSchema/properties/value/oneOf/0"},
+		{name: "undeclared required", branch: `{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind","missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0/required"},
+		{name: "additional properties true", branch: `{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true}`, path: "/valueSchema/properties/value/oneOf/0/additionalProperties"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			schema := fmt.Sprintf(`{"oneOf":[%s,{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, test.branch)
@@ -736,8 +752,8 @@ func TestParseProfile_ObjectInvariants(t *testing.T) {
 		{name: "nested missing explicit type", schema: `{"properties":{},"additionalProperties":false}`, path: "/valueSchema/properties/value"},
 		{name: "nested properties not object", schema: `{"type":"object","properties":[],"additionalProperties":false}`, path: "/valueSchema/properties/value"},
 		{name: "nested not closed", schema: `{"type":"object","properties":{}}`, path: "/valueSchema/properties/value"},
-		{name: "nested required undeclared", schema: `{"type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/required/0"},
-		{name: "union branch not closed", schema: `{"oneOf":[{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true},{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, path: "/valueSchema/properties/value/oneOf/0"},
+		{name: "nested required undeclared", schema: `{"type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/required"},
+		{name: "union branch not closed", schema: `{"oneOf":[{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true},{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, path: "/valueSchema/properties/value/oneOf/0/additionalProperties"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -752,8 +768,8 @@ func TestParseProfile_ObjectInvariants(t *testing.T) {
 		path        string
 	}{
 		{name: "root missing properties", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}`, path: "/valueSchema"},
-		{name: "root not closed", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":true}`, path: "/valueSchema"},
-		{name: "root required undeclared", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/required/0"},
+		{name: "root not closed", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":true}`, path: "/valueSchema/additionalProperties"},
+		{name: "root required undeclared", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/required"},
 		{name: "root union", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false,"oneOf":[]}`, path: "/valueSchema/oneOf"},
 	}
 	for _, test := range rootCases {
@@ -763,7 +779,11 @@ func TestParseProfile_ObjectInvariants(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseProfile() error: %v", err)
 			}
-			assertHasIssue(t, result.Issues, "invalidProfile", test.path)
+			code := "invalidProfile"
+			if test.name == "root union" {
+				code = "unsupportedKeyword"
+			}
+			assertHasIssue(t, result.Issues, code, test.path)
 		})
 	}
 }
@@ -1286,6 +1306,66 @@ func TestIssuesError(t *testing.T) {
 }
 
 // TestParseProfile_InvalidJSON tests that malformed JSON returns a parse error.
+func TestGenerateProfileRejectsGeneratedSymbolCollisions(t *testing.T) {
+	profile := profileSchemaFixtureJSON(`{"type":"string"}`, "")
+	for _, test := range []struct {
+		name string
+		cfg  Config
+		path string
+	}{
+		{name: "schema helper", cfg: Config{PkgName: "x", SchemaName: "Issue"}, path: "/generation/helpers"},
+		{name: "configured fields", cfg: Config{PkgName: "x", SchemaName: "Doc", FieldsName: "Doc"}, path: "/generation/fieldsName"},
+		{name: "invalid configured keyword", cfg: Config{PkgName: "x", SchemaName: "type"}, path: "/generation/schemaName"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source, issues, err := GenerateProfile(profile, test.cfg)
+			if err != nil || source != "" {
+				t.Fatalf("GenerateProfile() = source %q, err %v", source, err)
+			}
+			code := "nameCollision"
+			if test.name == "invalid configured keyword" {
+				code = "invalidName"
+			}
+			assertHasIssue(t, issues, code, test.path)
+		})
+	}
+}
+
+func TestGenerateProfileRejectsNestedTypeAndGeneratedConstantCollisions(t *testing.T) {
+	profile := []byte(fmt.Sprintf(`{
+		"$schema":%q,"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"profile":{"type":"object","properties":{},"additionalProperties":false}},
+			"additionalProperties":false,
+			"$defs":{"profile":{"type":"object","properties":{},"additionalProperties":false}}
+		},
+		"umpire":{"version":1,"fields":{"profile":{"isEmpty":"object"}},"rules":[]}
+	}`, ProfileSchemaURI))
+	_, issues, err := GenerateProfile(profile, Config{PkgName: "x", SchemaName: "Doc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHasIssue(t, issues, "nameCollision", "/valueSchema/$defs/profile")
+
+	for _, schema := range []string{
+		`{"type":"string","enum":["a-b","a_b"]}`,
+		`{"oneOf":[
+			{"type":"object","properties":{"kind":{"const":"a-b"}},"required":["kind"],"additionalProperties":false},
+			{"type":"object","properties":{"kind":{"const":"a_b"}},"required":["kind"],"additionalProperties":false}
+		]}`,
+	} {
+		result := parseProfileSchemaFixture(t, schema, "")
+		found := false
+		for _, issue := range result.Issues {
+			found = found || issue.Code == "nameCollision"
+		}
+		if !found {
+			t.Fatalf("generated constant collision not rejected: %+v", result.Issues)
+		}
+	}
+}
+
 func TestParseProfile_InvalidJSON(t *testing.T) {
 	_, err := ParseProfile([]byte(`{invalid json`))
 	if err == nil || !strings.Contains(err.Error(), "invalid JSON") {

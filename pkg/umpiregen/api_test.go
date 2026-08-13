@@ -204,17 +204,17 @@ func TestGenerateProfile_FieldMismatchRejectsDuplicateMergedDeclaration(t *testi
 		}
 	}`)
 
-	// With no schema name, availability's default Fields type clashes with the
-	// structural type inferred for the valueSchema-only "fields" property.
-	// This declared field mismatch must not return non-compilable merged source.
+	// Empty configured names and the declared field mismatch are both rejected
+	// before generation; no non-compilable merged source is returned.
 	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "profile"})
 	if source != "" {
 		t.Fatalf("GenerateProfile() returned source despite merge failure:\n%s", source)
 	}
-	if err == nil || !strings.Contains(err.Error(), `duplicate declaration "Fields"`) {
-		t.Fatalf("GenerateProfile() error = %v, want duplicate Fields declaration", err)
+	if err != nil {
+		t.Fatalf("GenerateProfile() error = %v, want definition issues", err)
 	}
 	assertHasIssue(t, issues, "fieldMismatch", "/valueSchema")
+	assertHasIssue(t, issues, "invalidName", "/generation/schemaName")
 }
 
 func TestGenerateProfile_InvalidJSON(t *testing.T) {
