@@ -87,6 +87,13 @@ func (g *CheckGenerator) genHelper() string {
 		b.WriteString(":\n")
 
 		if isPtr {
+			fd := g.fieldRuleMap[gn]
+			if fd != nil && fd.IsEmpty && strings.HasPrefix(string(base), "[]") {
+				b.WriteString("\t\tv := f.")
+				b.WriteString(gn)
+				b.WriteString("\n\t\treturn v != nil && len(*v) > 0\n")
+				continue
+			}
 			switch base {
 			case GoString:
 				b.WriteString("		v := f.")
@@ -507,6 +514,12 @@ func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, ft FieldTy
 	goType := ft.GoType
 	base := ft.SemanticBase()
 	if goType.Nullable() {
+		if hasIsEmpty && strings.HasPrefix(string(base), "[]") {
+			b.WriteString("func() bool { v := f.")
+			b.WriteString(gn)
+			b.WriteString("; return v != nil && len(*v) > 0 }()")
+			return
+		}
 		switch base {
 		case GoString:
 			b.WriteString("func() bool { v := f.")

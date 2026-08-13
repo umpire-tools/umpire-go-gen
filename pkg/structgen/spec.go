@@ -33,15 +33,16 @@ type UnionBranch struct {
 // TypeDef is a named type emitted by structgen. Exactly one family applies
 // depending on Kind.
 type TypeDef struct {
-	Name          string        // Go type name (PascalCase), e.g. "Node", "ActionKind"
-	Kind          Kind          // object | enum | union | array-alias
+	Name          string        // deterministic generated Go type name
+	Kind          Kind          // scalar | object | enum | union | array
 	JSONName      string        // original JSON property name for inline types; "" for $defs/root
-	Fields        []FieldDef    // object / union: declared fields (union includes all branches)
-	Values        []EnumValue   // enum: allowed wire values in declared order
-	Scalar        Scalar        // enum: primitive underlying type
-	Discriminator string        // union: the shared discriminator property (e.g. "kind")
-	Branches      []UnionBranch // union: per-discriminator branch requirements
-	Elem          *FieldType    // array-alias: the element type
+	Fields        []FieldDef    // object fields
+	Values        []EnumValue   // enum values in declared order
+	Scalar        Scalar        // scalar/enum underlying type
+	Discriminator string        // union shared discriminator property
+	Branches      []UnionBranch // branch-specific union definitions
+	Elem          *FieldType    // array definition element type
+	Constraints   Constraints   // scalar/array definition constraints
 }
 
 // EnumValue is one allowed value of an enum type.
@@ -50,14 +51,8 @@ type EnumValue struct {
 	Wire any    // original primitive wire value
 }
 
-// FieldDef is one field of an object/union type, or of the root.
-type FieldDef struct {
-	Name     string    // original JSON property name, e.g. "workflowType"
-	GoName   string    // PascalCase Go identifier, e.g. "WorkflowType"
-	JSONTag  string    // lowercase json tag text
-	Required bool      // whether the property appears in the object's required array
-	Type     FieldType // structural type
-	// Constraints used by validation (chunk 5).
+// Constraints are the supported scalar and array validation keywords.
+type Constraints struct {
 	MinLength        *int
 	MaxLength        *int
 	Minimum          *float64
@@ -70,19 +65,28 @@ type FieldDef struct {
 	HasConst         bool
 }
 
+// FieldDef is one field of an object/union type, or of the root.
+type FieldDef struct {
+	Name     string    // original JSON property name, e.g. "workflowType"
+	GoName   string    // PascalCase Go identifier, e.g. "WorkflowType"
+	JSONTag  string    // exact JSON wire name
+	Required bool      // whether the property appears in the object's required array
+	Type     FieldType // structural type
+	Constraints
+}
+
 // FieldType is the structural type of a field: either a primitive scalar, an
 // array of another field type, or a reference to a named type.
 type FieldType struct {
-	Kind   Kind
-	Scalar Scalar     // Kind == KindScalar
-	Ref    string     // Kind in {object, enum, union} → named TypeDef.Name
-	Elem   *FieldType // Kind == KindArray
+	Kind        Kind
+	Scalar      Scalar     // Kind == KindScalar
+	Ref         string     // non-empty when the schema uses a named generated type
+	Elem        *FieldType // Kind == KindArray
+	Constraints Constraints
 }
 
 // IsReference reports whether the field type points at a named generated type.
-func (ft FieldType) IsReference() bool {
-	return ft.Kind == KindObject || ft.Kind == KindEnum || ft.Kind == KindUnion
-}
+func (ft FieldType) IsReference() bool { return ft.Ref != "" }
 
 // Spec is the complete structural IR for one valueSchema.
 type Spec struct {

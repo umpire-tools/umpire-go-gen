@@ -100,23 +100,23 @@ func TestBuildObjectAndRefs(t *testing.T) {
 	spec := mustBuild(t, vs, "Org")
 
 	profile := fieldByName(spec.Root, "profile")
-	if profile == nil || profile.Type.Kind != KindObject || profile.Type.Ref != "Profile" {
-		t.Fatalf("profile field type = %+v, want object ref to Profile", profile.Type)
+	if profile == nil || profile.Type.Kind != KindObject || profile.Type.Ref != "OrgProfile" {
+		t.Fatalf("profile field type = %+v, want object ref to OrgProfile", profile.Type)
 	}
 	managers := fieldByName(spec.Root, "managers")
-	if managers == nil || managers.Type.Kind != KindArray || managers.Type.Elem.Kind != KindObject || managers.Type.Elem.Ref != "Manager" {
-		t.Fatalf("managers field type = %+v, want []Manager", managers.Type)
+	if managers == nil || managers.Type.Kind != KindArray || managers.Type.Elem.Kind != KindObject || managers.Type.Elem.Ref != "OrgManager" {
+		t.Fatalf("managers field type = %+v, want []OrgManager", managers.Type)
 	}
 
 	// Inline object named after its property, and the $def.
-	profileT := spec.Lookup("Profile")
+	profileT := spec.Lookup("OrgProfile")
 	if profileT == nil || profileT.Kind != KindObject {
 		t.Fatalf("missing inline Profile type")
 	}
 	if nickname := fieldByName(profileT.Fields, "nickname"); nickname == nil || !nickname.Required {
 		t.Fatalf("inline Profile.nickname = %+v, want required string", nickname)
 	}
-	mgrT := spec.Lookup("Manager")
+	mgrT := spec.Lookup("OrgManager")
 	if mgrT == nil || mgrT.Kind != KindObject {
 		t.Fatalf("missing Manager type")
 	}
@@ -136,10 +136,10 @@ func TestBuildEnum(t *testing.T) {
 	spec := mustBuild(t, vs, "Wf")
 
 	wt := fieldByName(spec.Root, "workflowType")
-	if wt == nil || wt.Type.Kind != KindEnum || wt.Type.Ref != "WorkflowType" {
-		t.Fatalf("workflowType type = %+v, want enum WorkflowType", wt.Type)
+	if wt == nil || wt.Type.Kind != KindEnum || wt.Type.Ref != "WfWorkflowTypeValue" {
+		t.Fatalf("workflowType type = %+v, want enum WfWorkflowTypeValue", wt.Type)
 	}
-	enumT := spec.Lookup("WorkflowType")
+	enumT := spec.Lookup("WfWorkflowTypeValue")
 	if enumT == nil || enumT.Kind != KindEnum {
 		t.Fatalf("missing WorkflowType enum")
 	}
@@ -177,29 +177,27 @@ func TestBuildUnion(t *testing.T) {
 	spec := mustBuild(t, vs, "Job")
 
 	action := fieldByName(spec.Root, "action")
-	if action == nil || action.Type.Kind != KindUnion || action.Type.Ref != "Action" {
+	if action == nil || action.Type.Kind != KindUnion || action.Type.Ref != "JobAction" {
 		t.Fatalf("action type = %+v, want union Action", action.Type)
 	}
-	u := spec.Lookup("Action")
+	u := spec.Lookup("JobAction")
 	if u == nil || u.Kind != KindUnion {
 		t.Fatalf("missing Action union")
 	}
 	if u.Discriminator != "kind" {
 		t.Errorf("Discriminator = %q, want kind", u.Discriminator)
 	}
-	kind := fieldByName(u.Fields, "kind")
-	if kind == nil || !kind.Required {
-		t.Fatalf("union kind field = %+v, want required", kind)
+	if len(u.Fields) != 0 || len(u.Branches) != 2 {
+		t.Fatalf("union must retain branch-specific fields: %+v", u)
 	}
-	// branch-specific fields are optional in the merged struct.
-	for _, name := range []string{"instructions", "command", "timeout"} {
-		fd := fieldByName(u.Fields, name)
-		if fd == nil {
-			t.Fatalf("missing branch field %q", name)
+	for _, branch := range u.Branches {
+		kind := fieldByName(branch.Fields, "kind")
+		if kind == nil || !kind.Required {
+			t.Fatalf("branch %q kind = %+v, want required", branch.Wire, kind)
 		}
-		if fd.Required {
-			t.Errorf("branch field %q should be optional in merged union, got required", name)
-		}
+	}
+	if fieldByName(u.Branches[0].Fields, "instructions") == nil || fieldByName(u.Branches[1].Fields, "command") == nil {
+		t.Fatalf("branch fields were not preserved: %+v", u.Branches)
 	}
 }
 
@@ -212,7 +210,7 @@ func TestBuildUnionPreservesBranchConstraints(t *testing.T) {
 		]}}
 	}`
 	spec := mustBuild(t, vs, "Doc")
-	action := spec.Lookup("Action")
+	action := spec.Lookup("DocAction")
 	if action == nil || len(action.Branches) != 2 {
 		t.Fatalf("Action branches = %+v", action)
 	}
@@ -230,12 +228,12 @@ func TestRootGoTypesPreservePresence(t *testing.T) {
 	vs := `{"type":"object","properties":{"title":{"type":"string"},"mode":{"type":"string","enum":["","ready"]},"tags":{"type":"array","items":{"type":"string"}}},"required":["title"]}`
 	spec := mustBuild(t, vs, "Doc")
 	got := RootGoTypes(spec)
-	if got["title"] != "*string" || got["mode"] != "*Mode" || got["tags"] != "*[]string" {
+	if got["title"] != "*string" || got["mode"] != "*DocModeValue" || got["tags"] != "*[]string" {
 		t.Fatalf("root types = %#v, want presence-preserving pointers", got)
 	}
 	underlying := RootUnderlyingGoTypes(spec)
-	if len(underlying) != 1 || underlying["mode"] != "string" {
-		t.Fatalf("root underlying types = %#v, want only named-enum semantics", underlying)
+	if len(underlying) != 2 || underlying["mode"] != "string" || underlying["tags"] != "[]string" {
+		t.Fatalf("root underlying types = %#v, want named enum and pointer-slice semantics", underlying)
 	}
 }
 
@@ -290,12 +288,12 @@ func TestBuildAvenorWorkflowFixture(t *testing.T) {
 		}
 	}
 	nodes := fieldByName(spec.Root, "nodes")
-	if nodes == nil || nodes.Type.Kind != KindArray || nodes.Type.Elem.Kind != KindObject || nodes.Type.Elem.Ref != "Node" {
+	if nodes == nil || nodes.Type.Kind != KindArray || nodes.Type.Elem.Kind != KindObject || nodes.Type.Elem.Ref != "WorkflowNode" {
 		t.Errorf("nodes type = %+v, want []Node", nodes.Type)
 	}
 	wt := fieldByName(spec.Root, "workflowType")
-	if wt == nil || wt.Type.Ref != "WorkflowType" {
-		t.Errorf("workflowType = %+v, want WorkflowType enum", wt.Type)
+	if wt == nil || wt.Type.Ref != "WorkflowWorkflowTypeValue" {
+		t.Errorf("workflowType = %+v, want WorkflowWorkflowTypeValue enum", wt.Type)
 	}
 	maxAttempts := fieldByName(spec.Root, "maxAttempts")
 	if maxAttempts == nil || maxAttempts.Minimum == nil || *maxAttempts.Minimum != 1 || *maxAttempts.Maximum != 10 {
@@ -303,19 +301,20 @@ func TestBuildAvenorWorkflowFixture(t *testing.T) {
 	}
 
 	// $defs types present.
-	for _, name := range []string{"Node", "Action", "Edge"} {
+	for _, name := range []string{"WorkflowNode", "WorkflowAction", "WorkflowEdge"} {
 		if spec.Lookup(name) == nil {
 			t.Errorf("missing $def type %q", name)
 		}
 	}
-	action := spec.Lookup("Action")
+	action := spec.Lookup("WorkflowAction")
 	if action == nil || action.Kind != KindUnion || action.Discriminator != "kind" {
 		t.Fatalf("Action = %+v, want union with Kind discriminator", action)
 	}
-	// union const wiring should be detached from branch fields; discriminator required.
-	kind := fieldByName(action.Fields, "kind")
-	if kind == nil {
-		t.Fatalf("Action missing kind field")
+	// Every concrete branch retains its required typed discriminator.
+	for _, branch := range action.Branches {
+		if kind := fieldByName(branch.Fields, "kind"); kind == nil || !kind.Required {
+			t.Fatalf("Action branch %q missing required kind field", branch.Wire)
+		}
 	}
 }
 
@@ -354,7 +353,7 @@ func TestBuildDeterministic(t *testing.T) {
 		names = append(names, td.Name)
 	}
 	// Root (D), then inline object A, then inline enum C (stable sorted encounter).
-	if !containsStr(names, "A") || !containsStr(names, "C") {
+	if !containsStr(names, "DA") || !containsStr(names, "DCValue") {
 		t.Fatalf("expected inline A and C types, got %v", names)
 	}
 }
@@ -399,7 +398,7 @@ func TestBuildPrimitiveEnums(t *testing.T) {
 		"count":{"type":"integer","enum":[-1,2]},
 		"ratio":{"type":"number","enum":[0.5,2]}
 	}}`, "Doc")
-	for name, scalar := range map[string]Scalar{"Flag": ScalarBool, "Count": ScalarInt, "Ratio": ScalarNumber} {
+	for name, scalar := range map[string]Scalar{"DocFlagValue": ScalarBool, "DocCountValue": ScalarInt, "DocRatioValue": ScalarNumber} {
 		td := spec.Lookup(name)
 		if td == nil || td.Kind != KindEnum || td.Scalar != scalar || len(td.Values) != 2 {
 			t.Fatalf("%s enum = %+v, want two %s values", name, td, scalar)
@@ -414,10 +413,10 @@ func TestBuildResolvesRFC6901EscapedDefinitionName(t *testing.T) {
 		"$defs":{"a/b~c":{"type":"object","properties":{"name":{"type":"string"}}}}
 	}`, "Doc")
 	value := fieldByName(spec.Root, "value")
-	if value == nil || value.Type.Kind != KindObject || value.Type.Ref != "ABC" {
+	if value == nil || value.Type.Kind != KindObject || value.Type.Ref != "DocABC" {
 		t.Fatalf("escaped reference type = %+v, want ABC object", value)
 	}
-	if spec.Lookup("ABC") == nil {
+	if spec.Lookup("DocABC") == nil {
 		t.Fatal("escaped definition was not built")
 	}
 
@@ -438,7 +437,7 @@ func TestBuildForwardRefToEnum(t *testing.T) {
 		}
 	}`
 	spec := mustBuild(t, vs, "Doc")
-	holder := spec.Lookup("Holder")
+	holder := spec.Lookup("DocHolder")
 	if holder == nil {
 		t.Fatalf("missing Holder type")
 	}
@@ -446,7 +445,7 @@ func TestBuildForwardRefToEnum(t *testing.T) {
 	if st == nil {
 		t.Fatalf("missing holder.st field")
 	}
-	if st.Type.Kind != KindEnum || st.Type.Ref != "Status" {
+	if st.Type.Kind != KindEnum || st.Type.Ref != "DocStatus" {
 		t.Fatalf("holder.st type = %+v, want enum ref Status (forward ref misresolved)", st.Type)
 	}
 }

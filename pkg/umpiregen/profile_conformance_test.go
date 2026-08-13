@@ -347,6 +347,12 @@ func compareSemantic(expected any, actual reflect.Value, path string) error {
 		if !actual.IsValid() || actual.Kind() != reflect.Struct {
 			return fmt.Errorf("decoded %%s kind = %%v, want object", path, actual.Kind())
 		}
+		// Tagged unions use a sealed interface in a one-field wrapper so arrays and
+		// nested objects retain ordinary encoding/json behavior. Compare the selected
+		// branch rather than treating the private wrapper as a wire object.
+		if actual.NumField() == 1 && actual.Type().Field(0).Name == "Value" && actual.Type().Field(0).Tag.Get("json") == "-" {
+			return compareSemantic(expected, actual.Field(0), path)
+		}
 		fields := make(map[string]reflect.Value, actual.NumField())
 		for i := 0; i < actual.NumField(); i++ {
 			fieldInfo := actual.Type().Field(i)
@@ -379,10 +385,11 @@ func compareSemantic(expected any, actual reflect.Value, path string) error {
 			}
 		}
 	case json.Number:
-		rat, ok := new(big.Rat).SetString(expected.String())
-		if !ok {
+		parsed, _, err := big.ParseFloat(expected.String(), 10, 256, big.ToNearestEven)
+		if err != nil {
 			return fmt.Errorf("invalid expected number at %%s", path)
 		}
+		rat, _ := parsed.Rat(nil)
 		switch actual.Kind() {
 		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 			if rat.Cmp(big.NewRat(actual.Int(), 1)) != 0 {
@@ -439,6 +446,10 @@ func main() {
 			fields, err = generated.Decode%s(request.values)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			if !bytes.Equal(request.values, valuesBefore) {
+				fmt.Fprintln(os.Stderr, "Decode mutated input bytes")
 				os.Exit(1)
 			}
 			if err := assertDecodedFields(fields, request.values); err != nil {
@@ -523,6 +534,51 @@ func main() {
 		t.Fatalf("decode generated runner output: %v\noutput: %s", err, output)
 	}
 	return results
+}
+
+func TestProfileGeneratedRunnerUsesPreviousSnapshot(t *testing.T) {
+	profile := []byte(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"creditCard":{"type":"string"},"bankTransfer":{"type":"string"}},
+			"additionalProperties":false
+		},
+		"umpire":{
+			"version":1,
+			"fields":{"creditCard":{"isEmpty":"string"},"bankTransfer":{"isEmpty":"string"}},
+			"rules":[{"type":"oneOf","group":"Payment","branches":{"creditCard":["creditCard"],"bankTransfer":["bankTransfer"]}}]
+		}
+	}`)
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "profilefixture", SchemaName: "Previous"})
+	if err != nil || len(issues) != 0 {
+		t.Fatalf("GenerateProfile() = issues %+v, err %v", issues, err)
+	}
+	values := json.RawMessage(`{"creditCard":"new-card","bankTransfer":"new-bank"}`)
+	cases := []profileConformanceFixtureCase{
+		{ID: "omitted-prev", Values: values, Conditions: json.RawMessage(`{}`), ExpectedStructure: profileExpectedStructure{Valid: true}, ExpectedAvailability: json.RawMessage(`{}`)},
+		{ID: "explicit-prev", Values: values, Conditions: json.RawMessage(`{}`), Prev: json.RawMessage(`{"creditCard":"old-card"}`), ExpectedStructure: profileExpectedStructure{Valid: true}, ExpectedAvailability: json.RawMessage(`{}`)},
+	}
+	results := profileRunGeneratedCases(t, source, "Previous", cases)
+	type status struct {
+		Enabled bool `json:"enabled"`
+	}
+	decode := func(raw json.RawMessage) map[string]status {
+		var availability map[string]status
+		if err := json.Unmarshal(raw, &availability); err != nil {
+			t.Fatal(err)
+		}
+		return availability
+	}
+	withoutPrev := decode(results[0].Availability)
+	withPrev := decode(results[1].Availability)
+	if !withoutPrev["CreditCard"].Enabled || withoutPrev["BankTransfer"].Enabled {
+		t.Fatalf("omitted prev selected wrong branch: %s", results[0].Availability)
+	}
+	if withPrev["CreditCard"].Enabled || !withPrev["BankTransfer"].Enabled {
+		t.Fatalf("explicit prev did not select newly satisfied branch: %s", results[1].Availability)
+	}
 }
 
 func profileAssertStructural(t *testing.T, got []profileStructuralTuple, expected profileExpectedStructure) {

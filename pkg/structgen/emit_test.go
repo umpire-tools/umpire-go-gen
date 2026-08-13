@@ -98,7 +98,7 @@ func hasTyped(issues []Issue, code, path string) bool {
 func TestPrimitiveEnumsAndBounds(t *testing.T) {
 	var d Doc
 	if err := json.Unmarshal([]byte("{\"flag\":true,\"label\":\"okay\",\"limits\":2,\"count\":2,\"ratio\":1}"), &d); err != nil { t.Fatal(err) }
-	if d.Flag == nil || *d.Flag != FlagTrue || d.Count == nil || *d.Count != CountValue2 || d.Ratio == nil || *d.Ratio != RatioValue2 { t.Fatalf("decoded enums: %+v", d) }
+	if d.Flag == nil || *d.Flag != DocFlagValueTrue || d.Count == nil || *d.Count != DocCountValueValue2 || d.Ratio == nil || *d.Ratio != DocRatioValueValue2 { t.Fatalf("decoded enums: %+v", d) }
 	if issues := d.Validate(); len(issues) != 0 { t.Fatalf("typed issues: %+v", issues) }
 
 	// Every value below remains a valid enum member but violates an attached
@@ -138,8 +138,8 @@ func TestEmitCompilesAvenor(t *testing.T) {
 	if strings.Contains(em.Source, "map[string]any") || strings.Contains(em.Source, "]any") || strings.Contains(em.Source, "*any") {
 		t.Fatalf("emitted source must not expose `any`:\n%s", em.Source)
 	}
-	for _, want := range []string{"type Workflow struct", "type Node struct", "type Edge struct", "type Action struct",
-		"type ActionKind string", "ActionKindManual ActionKind", "func (u *Action) UnmarshalJSON"} {
+	for _, want := range []string{"type Workflow struct", "type WorkflowNode struct", "type WorkflowEdge struct", "type WorkflowAction struct",
+		"type WorkflowActionValue interface", "type WorkflowActionValueManual struct", "WorkflowActionKindManual WorkflowActionKind", "func (u *WorkflowAction) UnmarshalJSON"} {
 		if !strings.Contains(em.Source, want) {
 			t.Errorf("missing %q in generated source", want)
 		}
@@ -161,17 +161,17 @@ func TestEmitUnionDecodeBehavior(t *testing.T) {
 	}`
 	testSrc := `
 func TestUnionDecode(t *testing.T) {
-	var a Action
+	var a JobAction
 	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"run\",\"command\":\"go\",\"timeout\":5}`" + `), &a); err != nil { t.Fatal(err) }
-	if a.Kind != ActionKindRun { t.Fatalf("Kind=%v", a.Kind) }
-	if a.Command == nil || *a.Command != "go" { t.Fatalf("Command=%v", a.Command) }
-	if a.Timeout == nil || *a.Timeout != 5 { t.Fatalf("Timeout=%v", a.Timeout) }
+	run, ok := a.Value.(*JobActionValueRun)
+	if !ok || run.Kind != JobActionKindRun || run.Command != "go" || run.Timeout == nil || *run.Timeout != 5 { t.Fatalf("run branch=%T %+v", a.Value, a.Value) }
 	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"manual\",\"instructions\":\"x\"}`" + `), &a); err != nil { t.Fatal(err) }
-	if a.Kind != ActionKindManual || a.Instructions == nil || *a.Instructions != "x" { t.Fatal("manual decode wrong") }
+	manual, ok := a.Value.(*JobActionValueManual)
+	if !ok || manual.Kind != JobActionKindManual || manual.Instructions != "x" { t.Fatal("manual decode wrong") }
 	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"manual\",\"instructions\":\"x\",\"command\":\"go\"}`" + `), &a); err == nil { t.Fatal("want error for property from another union branch") }
 	if err := json.Unmarshal([]byte(` + "`{\"kind\":\"bogus\"}`" + `), &a); err == nil { t.Fatal("want error for unknown discriminator") }
 	if err := json.Unmarshal([]byte(` + "`{}`" + `), &a); err == nil { t.Fatal("want error for missing discriminator") }
-	if string(ActionKindManual) != "manual" || string(ActionKindRun) != "run" { t.Fatal("wire values wrong") }
+	if string(JobActionKindManual) != "manual" || string(JobActionKindRun) != "run" { t.Fatal("wire values wrong") }
 }
 `
 	runGenerated(t, vs, "Job", "smoke", testSrc)
@@ -190,9 +190,9 @@ func TestEmitObjectEnumTags(t *testing.T) {
 func TestDecodeAndTags(t *testing.T) {
 	var d Doc
 	if err := json.Unmarshal([]byte(` + "`{\"title\":\"t\",\"workflowType\":\"pipeline\",\"profile\":{\"nickname\":\"n\"}}`" + `), &d); err != nil { t.Fatal(err) }
-	if d.Title == nil || *d.Title != "t" || d.WorkflowType == nil || *d.WorkflowType != WorkflowTypePipeline { t.Fatalf("decode wrong: %+v", d) }
+	if d.Title == nil || *d.Title != "t" || d.WorkflowType == nil || *d.WorkflowType != DocWorkflowTypeValuePipeline { t.Fatalf("decode wrong: %+v", d) }
 	if d.Profile == nil || d.Profile.Nickname != "n" { t.Fatalf("profile wrong: %+v", d.Profile) }
-	if string(WorkflowTypeFanout) != "fanout" { t.Fatal("fanout wire wrong") }
+	if string(DocWorkflowTypeValueFanout) != "fanout" { t.Fatal("fanout wire wrong") }
 }
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)
@@ -315,7 +315,7 @@ func TestEmitOptionalEmptyObjectAndNested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Emit(): %v", err)
 	}
-	if !strings.Contains(em.Source, "type Extra struct") {
+	if !strings.Contains(em.Source, "type DocExtra struct") {
 		t.Fatalf("empty schema must emit a named Extra struct:\n%s", em.Source)
 	}
 	testSrc := `
@@ -338,9 +338,9 @@ func TestEmitEnumNonAlphaWire(t *testing.T) {
 	}`
 	testSrc := `
 func TestEnumNonAlpha(t *testing.T) {
-	if b, _ := json.Marshal(ModeMyValue); string(b) != "\"my-value\"" { t.Fatalf("hyphen wire lost: %s", b) }
-	if string(ModeSnakeCase) != "snake_case" { t.Fatal("underscore wire lost") }
-	if string(ModeUPPER) != "UPPER" { t.Fatal("upper wire lost") }
+	if b, _ := json.Marshal(DocModeValueMyValue); string(b) != "\"my-value\"" { t.Fatalf("hyphen wire lost: %s", b) }
+	if string(DocModeValueSnakeCase) != "snake_case" { t.Fatal("underscore wire lost") }
+	if string(DocModeValueUPPER) != "UPPER" { t.Fatal("upper wire lost") }
 }
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)
@@ -394,6 +394,78 @@ func TestEscapingNullEnumBranch(t *testing.T) {
 	// auto branch requires only kind
 	mk(` + "`{\"state\":{\"kind\":\"auto\"}}`" + `)
 	if v := d.Validate(); len(v) != 0 { t.Fatalf("want clean auto branch, got %+v", v) }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+func TestEmitScalarArrayDefinitionsRecursiveConstraintsAndIntegralNumbers(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"code":{"$ref":"#/$defs/code"},
+			"counts":{"$ref":"#/$defs/counts"},
+			"matrix":{"type":"array","items":{"type":"array","minItems":1,"items":{"type":"string","minLength":2}}}
+		},
+		"additionalProperties":false,
+		"$defs":{
+			"code":{"type":"string","minLength":2},
+			"counts":{"type":"array","items":{"type":"integer","minimum":1}}
+		}
+	}`
+	testSrc := `
+func TestDefinitionAndRecursiveItems(t *testing.T) {
+	_ = json.Valid
+	has := func(issues []DocStructuralIssue, code, path string) bool {
+		for _, issue := range issues { if issue.Code == code && issue.Path == path { return true } }
+		return false
+	}
+	issues, err := ValidateDocJSON([]byte("{\"code\":\"x\",\"counts\":[0],\"matrix\":[[],[\"x\"]]}"))
+	if err != nil { t.Fatal(err) }
+	if !has(issues, "minLength", "/code") || !has(issues, "minimum", "/counts/0") || !has(issues, "minItems", "/matrix/0") || !has(issues, "minLength", "/matrix/1/0") { t.Fatalf("recursive issues: %+v", issues) }
+
+	input := []byte("{\"code\":\"ok\",\"counts\":[1.0,1e0],\"matrix\":[[\"ok\"]]}")
+	before := append([]byte(nil), input...)
+	decoded, err := DecodeDoc(input)
+	if err != nil { t.Fatal(err) }
+	if string(input) != string(before) { t.Fatal("DecodeDoc mutated input") }
+	if decoded.Counts == nil || len(*decoded.Counts) != 2 || (*decoded.Counts)[0] != 1 || (*decoded.Counts)[1] != 1 { t.Fatalf("integral decode: %+v", decoded.Counts) }
+	if _, ok := any(*decoded.Counts).(DocCounts); !ok { t.Fatal("array definition did not retain named Go type") }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+func TestEmitBranchSpecificIncompatibleWireTypes(t *testing.T) {
+	vs := `{"type":"object","properties":{"choice":{"oneOf":[
+		{"type":"object","properties":{"kind":{"const":"text"},"payload":{"type":"string"}},"required":["kind","payload"],"additionalProperties":false},
+		{"type":"object","properties":{"kind":{"const":"count"},"payload":{"type":"integer"}},"required":["kind","payload"],"additionalProperties":false}
+	]}},"additionalProperties":false}`
+	testSrc := `
+func TestBranchStorage(t *testing.T) {
+	var doc Doc
+	if err := json.Unmarshal([]byte("{\"choice\":{\"kind\":\"text\",\"payload\":\"value\"}}"), &doc); err != nil { t.Fatal(err) }
+	if doc.Choice == nil { t.Fatal("missing choice") }
+	text, ok := doc.Choice.Value.(*DocChoiceValueText)
+	if !ok || text.Payload != "value" { t.Fatalf("text branch: %T %+v", doc.Choice.Value, doc.Choice.Value) }
+	if err := json.Unmarshal([]byte("{\"choice\":{\"kind\":\"count\",\"payload\":2.0}}"), &doc); err != nil { t.Fatal(err) }
+	count, ok := doc.Choice.Value.(*DocChoiceValueCount)
+	if !ok || count.Payload != 2 { t.Fatalf("count branch: %T %+v", doc.Choice.Value, doc.Choice.Value) }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+func TestEmitStrictObjectNullAndReceiverReset(t *testing.T) {
+	vs := `{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}`
+	testSrc := `
+func TestStrictRoot(t *testing.T) {
+	value := "stale"
+	doc := Doc{Name: &value}
+	if err := json.Unmarshal([]byte("null"), &doc); err == nil { t.Fatal("explicit null must fail") }
+	if doc.Name == nil || *doc.Name != "stale" { t.Fatal("failed decode mutated receiver") }
+	if err := json.Unmarshal([]byte("{}"), &doc); err != nil { t.Fatal(err) }
+	if doc.Name != nil { t.Fatalf("omitted field retained stale state: %+v", doc) }
 }
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)

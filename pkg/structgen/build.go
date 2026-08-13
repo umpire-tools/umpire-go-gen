@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/umpire-tools/umpire-go-gen/pkg/codegen"
@@ -20,29 +21,36 @@ func Build(valueSchema json.RawMessage, rootName string) (*Spec, error) {
 		return nil, fmt.Errorf("valueSchema is not an object: %w", err)
 	}
 
-	b := &builder{byName: make(map[string]int)}
+	rootType := codegen.GoFieldName(rootName)
+	if rootType == "" {
+		rootType = "Profile"
+	}
+	b := &builder{byName: make(map[string]int), defNames: make(map[string]string), rootName: rootType}
 
 	// Pre-register all $defs names so forward references within an acyclic DAG resolve.
 	if defsRaw, ok := root["$defs"]; ok {
 		var defs map[string]json.RawMessage
 		if err := json.Unmarshal(defsRaw, &defs); err == nil {
 			for _, name := range sortedKeys(defs) {
-				b.register(TypeDef{Name: codegen.GoFieldName(name)})
+				typed := rootType + codegen.GoFieldName(name)
+				b.defNames[name] = typed
+				b.register(TypeDef{Name: typed})
 			}
 			for _, name := range sortedKeys(defs) {
-				typed := codegen.GoFieldName(name)
-				if _, err := b.resolve(defs[name], typed, "", true); err != nil {
+				typed := b.defNames[name]
+				ft, err := b.resolve(defs[name], typed, "", true)
+				if err != nil {
 					return nil, fmt.Errorf("$defs/%s: %w", name, err)
+				}
+				if ft.Ref != typed {
+					idx := b.byName[typed]
+					b.types[idx] = TypeDef{Name: typed, Kind: ft.Kind, Scalar: ft.Scalar, Elem: ft.Elem, Constraints: ft.Constraints}
 				}
 			}
 		}
 	}
 
 	// Build the root object.
-	rootType := codegen.GoFieldName(rootName)
-	if rootType == "" {
-		rootType = "Profile"
-	}
 	rootFields, err := b.resolveObjectFields(root, rootType, "")
 	if err != nil {
 		return nil, fmt.Errorf("valueSchema root: %w", err)
@@ -65,8 +73,10 @@ func Build(valueSchema json.RawMessage, rootName string) (*Spec, error) {
 }
 
 type builder struct {
-	types  []TypeDef
-	byName map[string]int
+	types    []TypeDef
+	byName   map[string]int
+	defNames map[string]string
+	rootName string
 }
 
 func (b *builder) register(t TypeDef) int {
@@ -96,33 +106,42 @@ func (b *builder) finalize() {
 		if ft == nil {
 			return
 		}
-		if ft.Kind == KindArray {
-			fixFT(ft.Elem)
-			return
-		}
 		if ft.Ref != "" {
 			if td := b.at(ft.Ref); td != nil {
 				ft.Kind = actualKind(td.Kind)
+				ft.Scalar = td.Scalar
+				ft.Elem = td.Elem
 			}
+		}
+		if ft.Kind == KindArray {
+			fixFT(ft.Elem)
 		}
 	}
 	for i := range b.types {
+		fixFT(b.types[i].Elem)
 		for j := range b.types[i].Fields {
 			fixFT(&b.types[i].Fields[j].Type)
+			if ref := b.types[i].Fields[j].Type.Ref; ref != "" {
+				if target := b.at(ref); target != nil && (target.Kind == KindScalar || target.Kind == KindArray || target.Kind == KindEnum) {
+					b.types[i].Fields[j].Constraints = target.Constraints
+					b.types[i].Fields[j].Type.Constraints = target.Constraints
+				}
+			}
+		}
+		for j := range b.types[i].Branches {
+			for k := range b.types[i].Branches[j].Fields {
+				field := &b.types[i].Branches[j].Fields[k]
+				fixFT(&field.Type)
+				if target := b.at(field.Type.Ref); target != nil && (target.Kind == KindScalar || target.Kind == KindArray || target.Kind == KindEnum) {
+					field.Constraints = target.Constraints
+					field.Type.Constraints = target.Constraints
+				}
+			}
 		}
 	}
 }
 
-func actualKind(k Kind) Kind {
-	switch k {
-	case KindEnum:
-		return KindEnum
-	case KindUnion:
-		return KindUnion
-	default:
-		return KindObject
-	}
-}
+func actualKind(k Kind) Kind { return k }
 
 // resolve returns the FieldType for a schema node and, for object/union/enum
 // nodes, fills/registers the corresponding named TypeDef.
@@ -138,7 +157,8 @@ func (b *builder) resolve(raw json.RawMessage, hint, jsonName string, isDef bool
 		if err := json.Unmarshal(refRaw, &ref); err != nil {
 			return FieldType{}, fmt.Errorf("$ref is not a string")
 		}
-		name := refName(ref)
+		wireName := refWireName(ref)
+		name := b.defNames[wireName]
 		if name == "" {
 			return FieldType{}, fmt.Errorf("unsupported $ref %q", ref)
 		}
@@ -150,7 +170,7 @@ func (b *builder) resolve(raw json.RawMessage, hint, jsonName string, isDef bool
 
 	// const-only node (no type): infer the scalar kind from the const value.
 	if hasNode(node, "const") && !hasNode(node, "type") {
-		return constScalar(node["const"]), nil
+		return withConstraints(constScalar(node["const"]), node), nil
 	}
 
 	// Tagged union: oneOf with a shared const discriminator.
@@ -164,9 +184,12 @@ func (b *builder) resolve(raw json.RawMessage, hint, jsonName string, isDef bool
 	} {
 		if isScalar(node, schemaType) {
 			if hasNode(node, "enum") {
+				if !isDef {
+					hint += "Value"
+				}
 				return b.resolveEnum(node, hint, scalar)
 			}
-			return FieldType{Kind: KindScalar, Scalar: scalar}, nil
+			return withConstraints(FieldType{Kind: KindScalar, Scalar: scalar}, node), nil
 		}
 	}
 
@@ -180,7 +203,7 @@ func (b *builder) resolve(raw json.RawMessage, hint, jsonName string, isDef bool
 			}
 			elem = e
 		}
-		return FieldType{Kind: KindArray, Elem: &elem}, nil
+		return withConstraints(FieldType{Kind: KindArray, Elem: &elem}, node), nil
 	}
 
 	// Object: declared object, object with properties, or an empty schema. All
@@ -190,7 +213,7 @@ func (b *builder) resolve(raw json.RawMessage, hint, jsonName string, isDef bool
 		if _, err := b.resolveObjectFields(node, hint, jsonName); err != nil {
 			return FieldType{}, err
 		}
-		return FieldType{Kind: KindObject, Ref: hint}, nil
+		return withConstraints(FieldType{Kind: KindObject, Ref: hint}, node), nil
 	}
 
 	return FieldType{}, fmt.Errorf("unsupported schema shape at %q", hint)
@@ -212,19 +235,18 @@ func (b *builder) resolveObjectFields(node map[string]json.RawMessage, name, jso
 
 	fields := make([]FieldDef, 0, len(props))
 	for _, propName := range sortedKeys(props) {
-		ft, err := b.resolve(props[propName], codegen.GoFieldName(propName), propName, false)
+		ft, err := b.resolve(props[propName], name+codegen.GoFieldName(propName), propName, false)
 		if err != nil {
 			return nil, fmt.Errorf("property %q: %w", propName, err)
 		}
-		fd := FieldDef{
-			Name:     propName,
-			GoName:   codegen.GoFieldName(propName),
-			JSONTag:  propName,
-			Required: required[propName],
-			Type:     ft,
-		}
-		attachConstraints(&fd, props[propName])
-		fields = append(fields, fd)
+		fields = append(fields, FieldDef{
+			Name:        propName,
+			GoName:      codegen.GoFieldName(propName),
+			JSONTag:     propName,
+			Required:    required[propName],
+			Type:        ft,
+			Constraints: ft.Constraints,
+		})
 	}
 	b.types[idx].Fields = fields
 	return fields, nil
@@ -236,7 +258,9 @@ func (b *builder) resolveEnum(node map[string]json.RawMessage, hint string, scal
 	if err := json.Unmarshal(node["enum"], &rawValues); err != nil || len(rawValues) == 0 {
 		return FieldType{}, fmt.Errorf("enum is not a non-empty array")
 	}
-	td := TypeDef{Name: hint, Kind: KindEnum, JSONName: hint, Scalar: scalar}
+	var constraintField FieldDef
+	attachConstraints(&constraintField, node)
+	td := TypeDef{Name: hint, Kind: KindEnum, JSONName: hint, Scalar: scalar, Constraints: constraintField.Constraints}
 	for i, raw := range rawValues {
 		value, err := enumValue(raw, scalar)
 		if err != nil {
@@ -256,7 +280,7 @@ func (b *builder) resolveEnum(node map[string]json.RawMessage, hint string, scal
 	}
 	idx := b.register(td)
 	b.types[idx] = td
-	return FieldType{Kind: KindEnum, Ref: hint}, nil
+	return withConstraints(FieldType{Kind: KindEnum, Scalar: scalar, Ref: hint}, node), nil
 }
 
 func enumValue(raw json.RawMessage, scalar Scalar) (any, error) {
@@ -274,7 +298,7 @@ func enumValue(raw json.RawMessage, scalar Scalar) (any, error) {
 		}
 		return value, nil
 	case ScalarInt:
-		value, ok := new(big.Rat).SetString(strings.TrimSpace(string(raw)))
+		value, ok := parseSchemaRat(strings.TrimSpace(string(raw)))
 		if !ok || !value.IsInt() || !value.Num().IsInt64() {
 			return nil, fmt.Errorf("enum value is not an integer")
 		}
@@ -304,15 +328,6 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 		return FieldType{}, fmt.Errorf("oneOf is not an array")
 	}
 
-	fieldType := map[string]FieldType{} // keyed by original wire name
-	var fieldOrder []string
-	addField := func(n string, ft FieldType) {
-		if _, ok := fieldType[n]; !ok {
-			fieldOrder = append(fieldOrder, n)
-		}
-		fieldType[n] = ft
-	}
-
 	discriminator := ""
 	var branchOrder []string
 	var branchDefs []UnionBranch
@@ -328,34 +343,22 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 		}
 		req := requiredSet(br)
 
-		var brFields []FieldDef
+		// Identify and verify the shared required string discriminator before
+		// resolving branch fields. The discriminator value owns every branch-local
+		// generated type name, so same-wire fields may have incompatible schemas.
+		branchDiscriminator := ""
 		for _, propName := range sortedKeys(props) {
-			ft, err := b.resolve(props[propName], codegen.GoFieldName(propName), propName, false)
-			if err != nil {
-				return FieldType{}, err
+			if req[propName] && hasStringConst(props[propName]) {
+				branchDiscriminator = propName
+				break
 			}
-			addField(propName, ft)
-			bf := FieldDef{
-				Name:     propName,
-				GoName:   codegen.GoFieldName(propName),
-				JSONTag:  propName,
-				Required: req[propName],
-				Type:     ft,
-			}
-			attachConstraints(&bf, props[propName])
-			brFields = append(brFields, bf)
 		}
-		// Identify the discriminator: the first required property with a string const.
 		if discriminator == "" {
-			for _, propName := range sortedKeys(props) {
-				if req[propName] && hasStringConst(props[propName]) {
-					discriminator = propName
-					break
-				}
-			}
+			discriminator = branchDiscriminator
 		}
-
-		// Record this branch (its const value and per-branch schemas/requirements).
+		if branchDiscriminator == "" || branchDiscriminator != discriminator {
+			return FieldType{}, fmt.Errorf("oneOf union %q has no shared required string discriminator", hint)
+		}
 		d, ok := discConst(props, discriminator)
 		if !ok {
 			return FieldType{}, fmt.Errorf("oneOf union %q branch lacks discriminator const %q", hint, discriminator)
@@ -364,6 +367,23 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 			return FieldType{}, fmt.Errorf("oneOf union %q: duplicate discriminator value %q", hint, d)
 		}
 		branchIdx[d] = len(branchDefs)
+
+		var brFields []FieldDef
+		branchOwner := hint + codegen.GoFieldName(d)
+		for _, propName := range sortedKeys(props) {
+			ft, err := b.resolve(props[propName], branchOwner+codegen.GoFieldName(propName), propName, false)
+			if err != nil {
+				return FieldType{}, err
+			}
+			brFields = append(brFields, FieldDef{
+				Name:        propName,
+				GoName:      codegen.GoFieldName(propName),
+				JSONTag:     propName,
+				Required:    req[propName],
+				Type:        ft,
+				Constraints: ft.Constraints,
+			})
+		}
 		branchDefs = append(branchDefs, UnionBranch{Wire: d, Fields: brFields})
 		branchOrder = append(branchOrder, d)
 	}
@@ -380,12 +400,14 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	}
 	enumIdx := b.register(enumT)
 	b.types[enumIdx] = enumT
-	fieldType[discriminator] = FieldType{Kind: KindEnum, Ref: enumName}
-
 	// Per-branch Required lists (wire names), minus the discriminator key itself.
 	for i := range branchDefs {
 		var reqNames []string
-		for _, bf := range branchDefs[i].Fields {
+		for j := range branchDefs[i].Fields {
+			bf := &branchDefs[i].Fields[j]
+			if bf.Name == discriminator {
+				bf.Type = FieldType{Kind: KindEnum, Ref: enumName}
+			}
 			if bf.Required && bf.Name != discriminator {
 				reqNames = append(reqNames, bf.Name)
 			}
@@ -394,18 +416,9 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	}
 
 	td := TypeDef{Name: hint, Kind: KindUnion, JSONName: hint, Discriminator: discriminator, Branches: branchDefs}
-	for _, n := range fieldOrder {
-		td.Fields = append(td.Fields, FieldDef{
-			Name:     n,
-			GoName:   codegen.GoFieldName(n),
-			JSONTag:  n,
-			Required: n == discriminator, // only the discriminator is required at the merged-struct level
-			Type:     fieldType[n],
-		})
-	}
 	idx := b.register(td)
 	b.types[idx] = td
-	return FieldType{Kind: KindUnion, Ref: hint}, nil
+	return withConstraints(FieldType{Kind: KindUnion, Ref: hint}, node), nil
 }
 
 // discConst returns the string const value of the named discriminator property
@@ -464,11 +477,14 @@ func constScalar(raw json.RawMessage) FieldType {
 	}
 }
 
-func attachConstraints(fd *FieldDef, raw json.RawMessage) {
-	var node map[string]json.RawMessage
-	if json.Unmarshal(raw, &node) != nil {
-		return
-	}
+func withConstraints(ft FieldType, node map[string]json.RawMessage) FieldType {
+	var fd FieldDef
+	attachConstraints(&fd, node)
+	ft.Constraints = fd.Constraints
+	return ft
+}
+
+func attachConstraints(fd *FieldDef, node map[string]json.RawMessage) {
 	if v, ok := intField(node, "minLength"); ok {
 		fd.MinLength = &v
 	}
@@ -501,7 +517,7 @@ func attachConstraints(fd *FieldDef, raw json.RawMessage) {
 
 // ---- helpers ----
 
-func refName(ref string) string {
+func refWireName(ref string) string {
 	const prefix = "#/$defs/"
 	if !strings.HasPrefix(ref, prefix) {
 		return ""
@@ -529,14 +545,14 @@ func refName(ref string) string {
 			return ""
 		}
 	}
-	return codegen.GoFieldName(decoded.String())
+	return decoded.String()
 }
 
 func kindOfRef(k Kind) Kind {
-	if k == KindEnum || k == KindUnion {
-		return k
+	if k == "" {
+		return KindObject // corrected by finalize after forward target resolution
 	}
-	return KindObject
+	return k
 }
 
 func isScalar(node map[string]json.RawMessage, want string) bool {
@@ -587,7 +603,7 @@ func intField(node map[string]json.RawMessage, key string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	value, ok := new(big.Rat).SetString(strings.TrimSpace(string(raw)))
+	value, ok := parseSchemaRat(strings.TrimSpace(string(raw)))
 	if !ok || !value.IsInt() || !value.Num().IsInt64() {
 		return 0, false
 	}
@@ -596,6 +612,45 @@ func intField(node map[string]json.RawMessage, key string) (int, bool) {
 		return 0, false
 	}
 	return int(integer), true
+}
+
+func parseSchemaRat(text string) (*big.Rat, bool) {
+	negative := strings.HasPrefix(text, "-")
+	if negative {
+		text = text[1:]
+	}
+	exponent := 0
+	if at := strings.IndexAny(text, "eE"); at >= 0 {
+		parsed, err := strconv.Atoi(text[at+1:])
+		if err != nil || parsed > 4096 || parsed < -4096 {
+			return nil, false
+		}
+		exponent = parsed
+		text = text[:at]
+	}
+	fractionDigits := 0
+	if dot := strings.IndexByte(text, '.'); dot >= 0 {
+		fractionDigits = len(text) - dot - 1
+		text = text[:dot] + text[dot+1:]
+	}
+	exponent -= fractionDigits
+	integer := new(big.Int)
+	if _, ok := integer.SetString(text, 10); !ok {
+		return nil, false
+	}
+	if negative {
+		integer.Neg(integer)
+	}
+	magnitude := exponent
+	if magnitude < 0 {
+		magnitude = -magnitude
+	}
+	power := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(magnitude)), nil)
+	if exponent >= 0 {
+		integer.Mul(integer, power)
+		return new(big.Rat).SetInt(integer), true
+	}
+	return new(big.Rat).SetFrac(integer, power), true
 }
 
 func numField(node map[string]json.RawMessage, key string) (float64, bool) {

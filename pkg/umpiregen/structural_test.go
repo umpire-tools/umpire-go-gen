@@ -52,8 +52,8 @@ func TestGenerateProfileStructural_Avenor(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"type Workflow struct", "type Node struct", "type Edge struct", "type Action struct",
-		"type ActionKind string", "ActionKindManual ActionKind",
+		"type Workflow struct", "type WorkflowNode struct", "type WorkflowEdge struct", "type WorkflowAction struct",
+		"type WorkflowActionValue interface", "type WorkflowActionValueManual struct", "WorkflowActionKindManual WorkflowActionKind",
 		"type WorkflowFields struct", "func Check(", "func Challenge(", "func (v Workflow) Validate()",
 		"type Issue struct",
 	} {
@@ -86,7 +86,7 @@ func TestGenerateComposedStructural(t *testing.T) {
 	if len(issues) > 0 {
 		t.Fatalf("expected no issues, got: %v", issues)
 	}
-	for _, want := range []string{"type Doc struct", "type WorkflowType string", "WorkflowTypePipe WorkflowType",
+	for _, want := range []string{"type Doc struct", "type DocWorkflowTypeValue string", "DocWorkflowTypeValuePipe DocWorkflowTypeValue",
 		"type DocFields struct", "func Check(", "func Challenge("} {
 		if !strings.Contains(source, want) {
 			t.Errorf("merged output missing %q", want)
@@ -142,7 +142,8 @@ func TestMergedRuntime(t *testing.T) {
 	var w Workflow
 	if err := json.Unmarshal([]byte(` + "`" + payload + "`" + `), &w); err != nil { t.Fatal(err) }
 	if v := w.Validate(); len(v) != 0 { t.Fatalf("validate: %+v", v) }
-	if w.Nodes[0].Action.Kind != ActionKindManual { t.Fatalf("union not decoded: %+v", w.Nodes[0].Action) }
+	manual, ok := w.Nodes[0].Action.Value.(*WorkflowActionValueManual)
+	if !ok || manual.Kind != WorkflowActionKindManual { t.Fatalf("union not decoded: %T %+v", w.Nodes[0].Action.Value, w.Nodes[0].Action.Value) }
 
 	// Availability over the richer field types.
 	var f WorkflowFields
@@ -191,7 +192,7 @@ func TestGenerateProfileStructural_NamedStringEnumUsesStringEmptiness(t *testing
 	}
 	testSrc := `
 func TestNamedEnumEmptiness(t *testing.T) {
-	empty := Choice("")
+	empty := DocChoiceValue("")
 	note := "present"
 	availability := Check(DocFields{Choice: &empty, Note: &note}, DocConditions{}, DocFields{})
 	if availability.Choice.Satisfied {
