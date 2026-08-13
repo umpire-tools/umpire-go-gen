@@ -231,6 +231,82 @@ func TestArrayAvailability(t *testing.T) {
 	runMerged(t, source, "arrayavailability", testSrc)
 }
 
+func TestGenerateProfileStructural_IntegralRequiredAndOptionalShapes(t *testing.T) {
+	profile := []byte(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"type":"object",
+			"properties":{
+				"mode":{"type":"integer","enum":[1.0,2e0]},
+				"counts":{"type":"array","items":{"type":"integer"}},
+				"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+				"optionalCount":{"type":"integer"},
+				"optionalCounts":{"type":"array","items":{"type":"integer"}}
+			},
+			"required":["mode","counts","matrix"],
+			"additionalProperties":false
+		},
+		"umpire":{
+			"version":1,
+			"fields":{
+				"mode":{"isEmpty":"number"},
+				"counts":{"isEmpty":"array"},
+				"matrix":{"isEmpty":"array"},
+				"optionalCount":{"isEmpty":"number"},
+				"optionalCounts":{"isEmpty":"array"}
+			},
+			"rules":[]
+		}
+	}`)
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "integralshapes", SchemaName: "Doc"})
+	if err != nil || len(issues) != 0 {
+		t.Fatalf("GenerateProfile() = issues %+v, err %v", issues, err)
+	}
+	testSrc := `
+func TestIntegralShapes(t *testing.T) {
+	_ = json.Valid
+	valid := []byte("{\"mode\":1e0,\"counts\":[1.0,2e0],\"matrix\":[[1e0],[2.0]],\"optionalCount\":1.0,\"optionalCounts\":[2e0]}")
+	fields, err := DecodeDoc(valid)
+	if err != nil { t.Fatal(err) }
+	if fields.Mode == nil || *fields.Mode != DocModeValueValue1 { t.Fatalf("required integer enum: %#v", fields.Mode) }
+	if fields.Counts == nil || len(*fields.Counts) != 2 || (*fields.Counts)[0] != 1 || (*fields.Counts)[1] != 2 { t.Fatalf("required integer array: %#v", fields.Counts) }
+	if fields.Matrix == nil || len(*fields.Matrix) != 2 || len((*fields.Matrix)[0]) != 1 || (*fields.Matrix)[0][0] != 1 || (*fields.Matrix)[1][0] != 2 { t.Fatalf("required nested integer array: %#v", fields.Matrix) }
+	if fields.OptionalCount == nil || *fields.OptionalCount != 1 { t.Fatalf("optional integer: %#v", fields.OptionalCount) }
+	if fields.OptionalCounts == nil || len(*fields.OptionalCounts) != 1 || (*fields.OptionalCounts)[0] != 2 { t.Fatalf("optional integer array: %#v", fields.OptionalCounts) }
+
+	minimal, err := DecodeDoc([]byte("{\"mode\":2.0,\"counts\":[],\"matrix\":[]}"))
+	if err != nil { t.Fatal(err) }
+	if minimal.Mode == nil || *minimal.Mode != DocModeValueValue2 { t.Fatalf("decimal enum: %#v", minimal.Mode) }
+	if minimal.Counts == nil || *minimal.Counts == nil || minimal.Matrix == nil || *minimal.Matrix == nil { t.Fatalf("required empty arrays lost presence: %#v", minimal) }
+	if minimal.OptionalCount != nil || minimal.OptionalCounts != nil { t.Fatalf("omitted optional pointers became present: %#v", minimal) }
+
+	for _, test := range []struct {
+		name string
+		input string
+		code string
+		path string
+	}{
+		{name:"fractional enum", input:"{\"mode\":1.5,\"counts\":[],\"matrix\":[]}", code:"type", path:"/mode"},
+		{name:"unsafe enum", input:"{\"mode\":9007199254740992,\"counts\":[],\"matrix\":[]}", code:"safeInteger", path:"/mode"},
+		{name:"fractional array", input:"{\"mode\":1,\"counts\":[1,2.5],\"matrix\":[]}", code:"type", path:"/counts/1"},
+		{name:"unsafe nested array", input:"{\"mode\":1,\"counts\":[],\"matrix\":[[9007199254740992]]}", code:"safeInteger", path:"/matrix/0/0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			issues, err := ValidateDocJSON([]byte(test.input))
+			if err != nil { t.Fatal(err) }
+			found := false
+			for _, issue := range issues { found = found || issue.Code == test.code && issue.Path == test.path }
+			if !found { t.Fatalf("issues = %+v, want %s at %s", issues, test.code, test.path) }
+			if _, err := DecodeDoc([]byte(test.input)); err == nil { t.Fatal("DecodeDoc accepted structurally invalid integer") }
+		})
+	}
+}
+`
+	runMerged(t, source, "integralshapes", testSrc)
+}
+
 func TestGenerateProfileStructural_NamedStringEnumUsesStringEmptiness(t *testing.T) {
 	profile := []byte(`{
 		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
