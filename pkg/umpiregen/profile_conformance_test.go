@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 	"unicode"
@@ -36,6 +35,7 @@ type profileConformanceFixtureCase struct {
 	ID                   string          `json:"id"`
 	Values               json.RawMessage `json:"values"`
 	Conditions           json.RawMessage `json:"conditions"`
+	Prev                 json.RawMessage `json:"prev"`
 	ExpectedStructure    profileExpectedStructure
 	ExpectedAvailability json.RawMessage `json:"expectedAvailability"`
 }
@@ -241,10 +241,9 @@ func profileRunFailureConformanceFixture(t *testing.T, path, id string) {
 	}
 }
 
-// profileRunGeneratedCases compiles one generated package per fixture and calls
-// Validate<Schema>JSON with each fixture's raw values JSON. Structurally invalid
-// cases assert structural parity only; they never decode fields or call Check.
-// Structurally valid cases with availability expectations compare Check's complete output.
+// profileRunGeneratedCases compiles one generated package per fixture. Every
+// case calls Validate<Schema>JSON, every structurally valid case also calls
+// Decode<Schema>, and only valid cases with availability expectations call Check.
 func profileRunGeneratedCases(t *testing.T, source, schemaName string, cases []profileConformanceFixtureCase) []profileConformanceResult {
 	t.Helper()
 	dir := t.TempDir()
@@ -268,8 +267,12 @@ func profileRunGeneratedCases(t *testing.T, source, schemaName string, cases []p
 		if len(conditions) == 0 {
 			conditions = json.RawMessage("null")
 		}
-		fmt.Fprintf(&requests, "{values: json.RawMessage(%q), previousValues: json.RawMessage(\"{}\"), conditions: json.RawMessage(%q), availability: %t},\n",
-			string(tc.Values), string(conditions), tc.ExpectedStructure.Valid && len(tc.ExpectedAvailability) != 0)
+		previousValues := "nil"
+		if len(tc.Prev) != 0 {
+			previousValues = fmt.Sprintf("json.RawMessage(%q)", string(tc.Prev))
+		}
+		fmt.Fprintf(&requests, "{values: json.RawMessage(%q), previousValues: %s, previousValuesPresent: %t, conditions: json.RawMessage(%q), structurallyValid: %t, availability: %t},\n",
+			string(tc.Values), previousValues, len(tc.Prev) != 0, string(conditions), tc.ExpectedStructure.Valid, tc.ExpectedStructure.Valid && len(tc.ExpectedAvailability) != 0)
 	}
 
 	mainSource := fmt.Sprintf(`package main
@@ -278,7 +281,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
+	"reflect"
+	"strings"
 
 	generated "generated"
 )
@@ -286,7 +292,9 @@ import (
 type request struct {
 	values json.RawMessage
 	previousValues json.RawMessage
+	previousValuesPresent bool
 	conditions json.RawMessage
+	structurallyValid bool
 	availability bool
 }
 
@@ -301,16 +309,117 @@ type result struct {
 	Availability json.RawMessage `+"`json:\"availability,omitempty\"`"+`
 }
 
+func clone[T any](value T) (T, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	var out T
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// assertDecodedFields walks the actual generated fields directly. The expected
+// side is independently decoded with UseNumber, so this does not rely on the
+// generated types' MarshalJSON behavior and includes nested objects and arrays.
+func assertDecodedFields(actual any, raw json.RawMessage) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var expected any
+	if err := decoder.Decode(&expected); err != nil {
+		return err
+	}
+	return compareSemantic(expected, reflect.ValueOf(actual), "$")
+}
+
+func compareSemantic(expected any, actual reflect.Value, path string) error {
+	for actual.IsValid() && (actual.Kind() == reflect.Interface || actual.Kind() == reflect.Pointer) {
+		if actual.IsNil() {
+			return fmt.Errorf("decoded %%s is nil; expected %%v", path, expected)
+		}
+		actual = actual.Elem()
+	}
+	switch expected := expected.(type) {
+	case map[string]any:
+		if !actual.IsValid() || actual.Kind() != reflect.Struct {
+			return fmt.Errorf("decoded %%s kind = %%v, want object", path, actual.Kind())
+		}
+		fields := make(map[string]reflect.Value, actual.NumField())
+		for i := 0; i < actual.NumField(); i++ {
+			fieldInfo := actual.Type().Field(i)
+			name := strings.Split(fieldInfo.Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				fields[name] = actual.Field(i)
+			}
+		}
+		for name, value := range expected {
+			field, ok := fields[name]
+			if !ok {
+				return fmt.Errorf("decoded %%s is missing field %%q", path, name)
+			}
+			if err := compareSemantic(value, field, path+"/"+name); err != nil {
+				return err
+			}
+		}
+		for name, field := range fields {
+			if _, ok := expected[name]; !ok && !field.IsZero() {
+				return fmt.Errorf("decoded %%s/%%s is unexpectedly non-zero", path, name)
+			}
+		}
+	case []any:
+		if !actual.IsValid() || actual.Kind() != reflect.Slice || actual.IsNil() || actual.Len() != len(expected) {
+			return fmt.Errorf("decoded %%s length/kind mismatch", path)
+		}
+		for i, value := range expected {
+			if err := compareSemantic(value, actual.Index(i), fmt.Sprintf("%%s/%%d", path, i)); err != nil {
+				return err
+			}
+		}
+	case json.Number:
+		rat, ok := new(big.Rat).SetString(expected.String())
+		if !ok {
+			return fmt.Errorf("invalid expected number at %%s", path)
+		}
+		switch actual.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			if rat.Cmp(big.NewRat(actual.Int(), 1)) != 0 {
+				return fmt.Errorf("decoded %%s = %%d, want %%s", path, actual.Int(), expected)
+			}
+		case reflect.Float32, reflect.Float64:
+			want, err := expected.Float64()
+			if err != nil || actual.Float() != want {
+				return fmt.Errorf("decoded %%s = %%v, want %%s", path, actual.Float(), expected)
+			}
+		default:
+			return fmt.Errorf("decoded %%s kind = %%v, want number", path, actual.Kind())
+		}
+	case string:
+		if !actual.IsValid() || actual.Kind() != reflect.String || actual.String() != expected {
+			return fmt.Errorf("decoded %%s = %%v, want %%q", path, actual, expected)
+		}
+	case bool:
+		if !actual.IsValid() || actual.Kind() != reflect.Bool || actual.Bool() != expected {
+			return fmt.Errorf("decoded %%s = %%v, want %%t", path, actual, expected)
+		}
+	case nil:
+		if actual.IsValid() && !actual.IsZero() {
+			return fmt.Errorf("decoded %%s is non-zero, want null", path)
+		}
+	default:
+		return fmt.Errorf("unsupported expected value %%T at %%s", expected, path)
+	}
+	return nil
+}
+
 func main() {
 	requests := []request{
 %s	}
 	results := make([]result, 0, len(requests))
-	var firstAvailabilityRequest *request
-	for i := range requests {
-		request := requests[i]
+	for _, request := range requests {
 		valuesBefore := append(json.RawMessage(nil), request.values...)
-		previousValuesBefore := append(json.RawMessage(nil), request.previousValues...)
-		conditionBytesBefore := append(json.RawMessage(nil), request.conditions...)
 		issues, err := generated.Validate%sJSON(request.values)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -324,50 +433,55 @@ func main() {
 		for _, issue := range issues {
 			out.Structural = append(out.Structural, tuple{Source: issue.Source, Code: issue.Code, Path: issue.Path})
 		}
-		if request.availability {
-			if firstAvailabilityRequest == nil {
-				firstAvailabilityRequest = &requests[i]
-			}
-			var fields generated.%sFields
-			var conditions generated.%sConditions
-			var previousFields generated.%sFields
-			if err := json.Unmarshal(request.values, &fields); err != nil {
+
+		var fields generated.%sFields
+		if request.structurallyValid {
+			fields, err = generated.Decode%s(request.values)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-			if err := json.Unmarshal(request.previousValues, &previousFields); err != nil {
+			if err := assertDecodedFields(fields, request.values); err != nil {
 				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+		if request.availability {
+			var conditions generated.%sConditions
+			var previousFields generated.%sFields
+			// Preserve omitted prev (nil raw bytes) versus explicit JSON, including
+			// {}, in the generated-runner request. Check accepts a concrete Fields
+			// value, so omission is deliberately converted here to its zero value.
+			if request.previousValuesPresent {
+				if len(request.previousValues) == 0 {
+					fmt.Fprintln(os.Stderr, "previousValues marked present without JSON")
+					os.Exit(1)
+				}
+				if err := json.Unmarshal(request.previousValues, &previousFields); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			} else if request.previousValues != nil {
+				fmt.Fprintln(os.Stderr, "omitted previousValues was not preserved as absent before Check conversion")
 				os.Exit(1)
 			}
 			if err := json.Unmarshal(request.conditions, &conditions); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-			fieldsBefore, err := json.Marshal(fields)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			previousFieldsBefore, err := json.Marshal(previousFields)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			conditionsBefore, err := json.Marshal(conditions)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
+
+			// Deep-copy and compare the actual typed arguments passed to Check so
+			// mutations through nested pointers or slices cannot hide behind aliases.
+			fieldsBefore, fieldsErr := clone(fields)
+			previousFieldsBefore, previousFieldsErr := clone(previousFields)
+			conditionsBefore, conditionsErr := clone(conditions)
+			if fieldsErr != nil || previousFieldsErr != nil || conditionsErr != nil {
+				fmt.Fprintln(os.Stderr, "clone Check arguments")
 				os.Exit(1)
 			}
 			checked := generated.Check(fields, conditions, previousFields)
-			fieldsAfter, fieldsErr := json.Marshal(fields)
-			previousFieldsAfter, previousFieldsErr := json.Marshal(previousFields)
-			conditionsAfter, conditionsErr := json.Marshal(conditions)
-			if fieldsErr != nil || previousFieldsErr != nil || conditionsErr != nil || !bytes.Equal(fieldsBefore, fieldsAfter) || !bytes.Equal(previousFieldsBefore, previousFieldsAfter) || !bytes.Equal(conditionsBefore, conditionsAfter) {
-				fmt.Fprintln(os.Stderr, "Check mutated decoded fields, previous fields, or conditions")
-				os.Exit(1)
-			}
-			if !bytes.Equal(request.values, valuesBefore) || !bytes.Equal(request.previousValues, previousValuesBefore) || !bytes.Equal(request.conditions, conditionBytesBefore) {
-				fmt.Fprintln(os.Stderr, "generated validation/check mutated input bytes")
+			if !reflect.DeepEqual(fields, fieldsBefore) || !reflect.DeepEqual(previousFields, previousFieldsBefore) || !reflect.DeepEqual(conditions, conditionsBefore) {
+				fmt.Fprintln(os.Stderr, "Check mutated decoded values, prev, or conditions")
 				os.Exit(1)
 			}
 			availability, err := json.Marshal(checked)
@@ -379,72 +493,12 @@ func main() {
 		}
 		results = append(results, out)
 	}
-	if firstAvailabilityRequest != nil {
-		mutationValuesBefore := append(json.RawMessage(nil), firstAvailabilityRequest.values...)
-		mutationPreviousBefore := append(json.RawMessage(nil), firstAvailabilityRequest.previousValues...)
-		mutationConditionsBefore := append(json.RawMessage(nil), firstAvailabilityRequest.conditions...)
-		var mutationValues map[string]json.RawMessage
-		if err := json.Unmarshal(firstAvailabilityRequest.values, &mutationValues); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		mutationValues["__mutation_only_marker"] = json.RawMessage("true")
-		mutationPrevious, err := json.Marshal(mutationValues)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		mutationPreviousBytesBefore := append(json.RawMessage(nil), mutationPrevious...)
-		var fields generated.%sFields
-		var conditions generated.%sConditions
-		var previousFields generated.%sFields
-		if err := json.Unmarshal(firstAvailabilityRequest.values, &fields); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		if err := json.Unmarshal(mutationPrevious, &previousFields); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		if err := json.Unmarshal(firstAvailabilityRequest.conditions, &conditions); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		fieldsBefore, err := json.Marshal(fields)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		previousFieldsBefore, err := json.Marshal(previousFields)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		conditionsBefore, err := json.Marshal(conditions)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		checked := generated.Check(fields, conditions, previousFields)
-		fieldsAfter, fieldsErr := json.Marshal(fields)
-		previousFieldsAfter, previousFieldsErr := json.Marshal(previousFields)
-		conditionsAfter, conditionsErr := json.Marshal(conditions)
-		if fieldsErr != nil || previousFieldsErr != nil || conditionsErr != nil || !bytes.Equal(fieldsBefore, fieldsAfter) || !bytes.Equal(previousFieldsBefore, previousFieldsAfter) || !bytes.Equal(conditionsBefore, conditionsAfter) {
-			fmt.Fprintln(os.Stderr, "mutation-only generated-runner check mutated decoded fields, previous fields, or conditions")
-			os.Exit(1)
-		}
-		if !bytes.Equal(firstAvailabilityRequest.values, mutationValuesBefore) || !bytes.Equal(firstAvailabilityRequest.previousValues, mutationPreviousBefore) || !bytes.Equal(firstAvailabilityRequest.conditions, mutationConditionsBefore) || !bytes.Equal(mutationPrevious, mutationPreviousBytesBefore) {
-			fmt.Fprintln(os.Stderr, "mutation-only generated-runner check mutated raw bytes")
-			os.Exit(1)
-		}
-		_ = checked
-	}
 	if err := json.NewEncoder(os.Stdout).Encode(results); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-`, requests.String(), schemaName, schemaName, schemaName, schemaName, schemaName, schemaName, schemaName)
+`, requests.String(), schemaName, schemaName, schemaName, schemaName, schemaName)
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainSource), 0o644); err != nil {
 		t.Fatalf("write generated runner: %v", err)
 	}
@@ -476,12 +530,10 @@ func profileAssertStructural(t *testing.T, got []profileStructuralTuple, expecte
 	if (len(got) == 0) != expected.Valid {
 		t.Fatalf("structural valid = %v, want %v; issues: %+v", len(got) == 0, expected.Valid, got)
 	}
-	want := append([]profileStructuralTuple(nil), expected.Issues...)
-	got = append([]profileStructuralTuple(nil), got...)
-	profileSortStructuralTuples(got)
-	profileSortStructuralTuples(want)
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("structural tuples = %+v, want %+v", got, want)
+	// Structural issue order is normative; compare generated order directly to
+	// the canonical fixture order so the harness exposes ordering regressions.
+	if !reflect.DeepEqual(got, expected.Issues) {
+		t.Fatalf("structural tuples = %+v, want %+v", got, expected.Issues)
 	}
 }
 
@@ -555,38 +607,23 @@ func TestProfileCanonicalAvailabilityPreservesCompleteStatusShape(t *testing.T) 
 
 func profileAssertDefinitionIssues(t *testing.T, got []DefinitionIssue, expected []profileDefinitionTuple) {
 	t.Helper()
+	counts := make(map[profileDefinitionTuple]int, len(got))
 	actual := make([]profileDefinitionTuple, len(got))
 	for i, issue := range got {
 		actual[i] = profileDefinitionTuple{Code: issue.Code, Path: issue.Path}
+		counts[actual[i]]++
 	}
-	want := append([]profileDefinitionTuple(nil), expected...)
-	sort.Slice(actual, func(i, j int) bool {
-		if actual[i].Path != actual[j].Path {
-			return actual[i].Path < actual[j].Path
-		}
-		return actual[i].Code < actual[j].Code
-	})
-	sort.Slice(want, func(i, j int) bool {
-		if want[i].Path != want[j].Path {
-			return want[i].Path < want[j].Path
-		}
-		return want[i].Code < want[j].Code
-	})
-	if !reflect.DeepEqual(actual, want) {
-		t.Fatalf("definition issue tuples = %+v, want %+v", actual, want)
+	for _, issue := range expected {
+		counts[issue]--
 	}
-}
-
-func profileSortStructuralTuples(tuples []profileStructuralTuple) {
-	sort.Slice(tuples, func(i, j int) bool {
-		if tuples[i].Path != tuples[j].Path {
-			return tuples[i].Path < tuples[j].Path
+	for _, count := range counts {
+		if count != 0 {
+			t.Fatalf("definition issue tuples = %+v, want unordered %+v", actual, expected)
 		}
-		if tuples[i].Code != tuples[j].Code {
-			return tuples[i].Code < tuples[j].Code
-		}
-		return tuples[i].Source < tuples[j].Source
-	})
+	}
+	if len(got) != len(expected) {
+		t.Fatalf("definition issue tuples = %+v, want unordered %+v", actual, expected)
+	}
 }
 
 // profileConformanceName turns arbitrary fixture identifiers into a stable,

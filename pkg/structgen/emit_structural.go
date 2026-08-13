@@ -14,31 +14,6 @@ type rawGen struct {
 
 func (g rawGen) fn(name string) string { return "svalidate" + name }
 
-// enumWires returns the wire values for a direct enum field or array-of-enum elem.
-func (g rawGen) enumWires(ft FieldType) []string {
-	var ref string
-	switch ft.Kind {
-	case KindEnum:
-		ref = ft.Ref
-	case KindArray:
-		if ft.Elem != nil && ft.Elem.Kind == KindEnum {
-			ref = ft.Elem.Ref
-		}
-	}
-	if ref == "" {
-		return nil
-	}
-	td := g.spec.Lookup(ref)
-	if td == nil {
-		return nil
-	}
-	out := make([]string, 0, len(td.Values))
-	for _, v := range td.Values {
-		out = append(out, v.Wire)
-	}
-	return out
-}
-
 // emitStructural emits the profile's raw structural validation API.
 // It emits structural issues, structural errors, validation, and decoding.
 // Raw values keep omitted optional properties distinct from explicit null.
@@ -64,6 +39,8 @@ func emitStructural(b *strings.Builder, spec *Spec, opts EmitOptions) {
 		switch td.Kind {
 		case KindObject:
 			g.emitRawObject(b, td.Name, td.Fields)
+		case KindEnum:
+			g.emitRawEnum(b, td)
 		case KindUnion:
 			g.emitRawUnion(b, td)
 		}
@@ -273,19 +250,7 @@ func (g rawGen) emitRawArrayElemBody(b *strings.Builder, elem *FieldType) {
 	case KindObject, KindUnion:
 		fmt.Fprintf(b, "\t\t\t\t%s(el, epath, espath, issues)\n", g.fn(elem.Ref))
 	case KindEnum:
-		wires := g.enumWires(*elem)
-		fmt.Fprintf(b, "\t\t\t\tif %sStructuralKind(el) == \"string\" {\n", S)
-		b.WriteString("\t\t\t\t\tvar ev string\n")
-		b.WriteString("\t\t\t\t\t_ = json.Unmarshal(el, &ev)\n")
-		b.WriteString("\t\t\t\t\tswitch ev {\n")
-		for _, v := range wires {
-			fmt.Fprintf(b, "\t\t\t\t\tcase %q:\n", v)
-		}
-		fmt.Fprintf(b, "\t\t\t\t\tdefault:\n\t\t\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"enum\", epath, espath))\n", S)
-		b.WriteString("\t\t\t\t\t}\n")
-		b.WriteString("\t\t\t\t} else {\n")
-		fmt.Fprintf(b, "\t\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"type\", epath, espath))\n", S)
-		b.WriteString("\t\t\t\t}\n")
+		fmt.Fprintf(b, "\t\t\t\t%s(el, epath, espath, issues)\n", g.fn(elem.Ref))
 	case KindScalar:
 		switch elem.Scalar {
 		case ScalarString, ScalarBool, ScalarNumber:
@@ -310,20 +275,55 @@ func (g rawGen) emitRawArrayElemBody(b *strings.Builder, elem *FieldType) {
 }
 
 func (g rawGen) emitRawEnumBody(b *strings.Builder, f FieldDef) {
-	S := g.S
-	wires := g.enumWires(f.Type)
-	fmt.Fprintf(b, "\t\tif %sStructuralKind(r) == \"string\" {\n", S)
-	b.WriteString("\t\t\tvar ev string\n")
-	b.WriteString("\t\t\t_ = json.Unmarshal(r, &ev)\n")
-	b.WriteString("\t\t\tswitch ev {\n")
-	for _, v := range wires {
-		fmt.Fprintf(b, "\t\t\tcase %q:\n", v)
+	fmt.Fprintf(b, "\t\t%s(r, fpath, fspath, issues)\n", g.fn(f.Type.Ref))
+	enum := g.spec.Lookup(f.Type.Ref)
+	if enum == nil {
+		return
 	}
-	fmt.Fprintf(b, "\t\t\tdefault:\n\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"enum\", fpath, fspath))\n", S)
-	b.WriteString("\t\t\t}\n")
-	b.WriteString("\t\t} else {\n")
-	fmt.Fprintf(b, "\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"type\", fpath, fspath))\n", S)
-	b.WriteString("\t\t}\n")
+	constraintField := f
+	constraintField.Type = FieldType{Kind: KindScalar, Scalar: enum.Scalar}
+	g.emitRawScalarBody(b, constraintField)
+}
+
+func (g rawGen) emitRawEnum(b *strings.Builder, td TypeDef) {
+	S := g.S
+	fmt.Fprintf(b, "func %s(raw json.RawMessage, path, schemaPath string, issues *[]%sStructuralIssue) {\n", g.fn(td.Name), S)
+	wantKind := "string"
+	valueType := "string"
+	valueName := "value"
+	switch td.Scalar {
+	case ScalarBool:
+		wantKind, valueType = "boolean", "bool"
+	case ScalarInt:
+		fmt.Fprintf(b, "\t%s, isInt, isSafe := %sStructuralIntParts(raw)\n", valueName, S)
+		b.WriteString("\tif !isInt {\n")
+		fmt.Fprintf(b, "\t\t*issues = append(*issues, %sStructuralIssueAt(\"type\", path, schemaPath))\n", S)
+		b.WriteString("\t\treturn\n\t}\n\tif !isSafe {\n")
+		fmt.Fprintf(b, "\t\t*issues = append(*issues, %sStructuralIssueAt(\"safeInteger\", path, schemaPath))\n", S)
+		b.WriteString("\t\treturn\n\t}\n")
+		emitRawEnumCases(b, td, valueName, S)
+		b.WriteString("}\n\n")
+		return
+	case ScalarNumber:
+		wantKind, valueType = "number", "float64"
+	}
+	fmt.Fprintf(b, "\tif %sStructuralKind(raw) != %q {\n", S, wantKind)
+	fmt.Fprintf(b, "\t\t*issues = append(*issues, %sStructuralIssueAt(\"type\", path, schemaPath))\n", S)
+	b.WriteString("\t\treturn\n\t}\n")
+	fmt.Fprintf(b, "\tvar %s %s\n", valueName, valueType)
+	fmt.Fprintf(b, "\t_ = json.Unmarshal(raw, &%s)\n", valueName)
+	emitRawEnumCases(b, td, valueName, S)
+	b.WriteString("}\n\n")
+}
+
+func emitRawEnumCases(b *strings.Builder, td TypeDef, valueName, schemaName string) {
+	fmt.Fprintf(b, "\tswitch %s {\n", valueName)
+	for _, value := range td.Values {
+		fmt.Fprintf(b, "\tcase %s:\n", enumWireLiteral(value.Wire))
+	}
+	b.WriteString("\tdefault:\n")
+	fmt.Fprintf(b, "\t\t*issues = append(*issues, %sStructuralIssueAt(\"enum\", path, schemaPath))\n", schemaName)
+	b.WriteString("\t}\n")
 }
 
 func (g rawGen) emitRawScalarBody(b *strings.Builder, f FieldDef) {
@@ -384,6 +384,16 @@ func (g rawGen) emitRawScalarBody(b *strings.Builder, f FieldDef) {
 			fmt.Fprintf(b, "\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"maximum\", fpath, fspath))\n", S)
 			b.WriteString("\t\t\t}\n")
 		}
+		if f.ExclusiveMinimum != nil {
+			fmt.Fprintf(b, "\t\t\tif nv <= %v {\n", *f.ExclusiveMinimum)
+			fmt.Fprintf(b, "\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"exclusiveMinimum\", fpath, fspath))\n", S)
+			b.WriteString("\t\t\t}\n")
+		}
+		if f.ExclusiveMaximum != nil {
+			fmt.Fprintf(b, "\t\t\tif nv >= %v {\n", *f.ExclusiveMaximum)
+			fmt.Fprintf(b, "\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"exclusiveMaximum\", fpath, fspath))\n", S)
+			b.WriteString("\t\t\t}\n")
+		}
 		if f.HasConst {
 			if cv, ok := f.Const.(float64); ok {
 				fmt.Fprintf(b, "\t\t\tif nv != %v {\n", cv)
@@ -412,6 +422,16 @@ func (g rawGen) emitRawScalarBody(b *strings.Builder, f FieldDef) {
 		if f.Maximum != nil {
 			fmt.Fprintf(b, "\t\t\t\tif float64(ival) > %v {\n", *f.Maximum)
 			fmt.Fprintf(b, "\t\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"maximum\", fpath, fspath))\n", S)
+			b.WriteString("\t\t\t\t}\n")
+		}
+		if f.ExclusiveMinimum != nil {
+			fmt.Fprintf(b, "\t\t\t\tif float64(ival) <= %v {\n", *f.ExclusiveMinimum)
+			fmt.Fprintf(b, "\t\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"exclusiveMinimum\", fpath, fspath))\n", S)
+			b.WriteString("\t\t\t\t}\n")
+		}
+		if f.ExclusiveMaximum != nil {
+			fmt.Fprintf(b, "\t\t\t\tif float64(ival) >= %v {\n", *f.ExclusiveMaximum)
+			fmt.Fprintf(b, "\t\t\t\t\t*issues = append(*issues, %sStructuralIssueAt(\"exclusiveMaximum\", fpath, fspath))\n", S)
 			b.WriteString("\t\t\t\t}\n")
 		}
 		if f.HasConst {

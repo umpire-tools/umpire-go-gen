@@ -75,6 +75,57 @@ func aivenValueSchema(t *testing.T) []byte {
 	return fix.Profile.ValueSchema
 }
 
+func TestEmitPrimitiveEnumsAndExclusiveBounds(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"flag":{"type":"boolean","enum":[true,false]},
+			"label":{"type":"string","enum":["x","okay","oversized"],"minLength":2,"maxLength":4},
+			"limits":{"type":"integer","enum":[-1,2,4],"minimum":0,"maximum":3},
+			"count":{"type":"integer","enum":[1,2,4],"exclusiveMinimum":1,"exclusiveMaximum":4},
+			"ratio":{"type":"number","enum":[0.5,1,2],"exclusiveMinimum":0.5,"exclusiveMaximum":2}
+		}
+	}`
+	testSrc := `
+func hasStructural(issues []DocStructuralIssue, code, path string) bool {
+	for _, issue := range issues { if issue.Code == code && issue.Path == path { return true } }
+	return false
+}
+func hasTyped(issues []Issue, code, path string) bool {
+	for _, issue := range issues { if issue.Code == code && issue.Path == path { return true } }
+	return false
+}
+func TestPrimitiveEnumsAndBounds(t *testing.T) {
+	var d Doc
+	if err := json.Unmarshal([]byte("{\"flag\":true,\"label\":\"okay\",\"limits\":2,\"count\":2,\"ratio\":1}"), &d); err != nil { t.Fatal(err) }
+	if d.Flag == nil || *d.Flag != FlagTrue || d.Count == nil || *d.Count != CountValue2 || d.Ratio == nil || *d.Ratio != RatioValue2 { t.Fatalf("decoded enums: %+v", d) }
+	if issues := d.Validate(); len(issues) != 0 { t.Fatalf("typed issues: %+v", issues) }
+
+	// Every value below remains a valid enum member but violates an attached
+	// lower/string constraint. Typed Validate must enforce both layers.
+	if err := json.Unmarshal([]byte("{\"label\":\"x\",\"limits\":-1,\"count\":1,\"ratio\":0.5}"), &d); err != nil { t.Fatal(err) }
+	typed := d.Validate()
+	if !hasTyped(typed, "minLength", "/label") || !hasTyped(typed, "minimum", "/limits") || !hasTyped(typed, "exclusiveMinimum", "/count") || !hasTyped(typed, "exclusiveMinimum", "/ratio") { t.Fatalf("typed lower issues: %+v", typed) }
+
+	// Exercise exclusiveMaximum through typed Validate for both integer and number.
+	if err := json.Unmarshal([]byte("{\"label\":\"oversized\",\"limits\":4,\"count\":4,\"ratio\":2}"), &d); err != nil { t.Fatal(err) }
+	typed = d.Validate()
+	if !hasTyped(typed, "maxLength", "/label") || !hasTyped(typed, "maximum", "/limits") || !hasTyped(typed, "exclusiveMaximum", "/count") || !hasTyped(typed, "exclusiveMaximum", "/ratio") { t.Fatalf("typed upper issues: %+v", typed) }
+
+	issues, err := ValidateDocJSON([]byte("{\"label\":\"x\",\"limits\":-1,\"count\":1,\"ratio\":0.5}"))
+	if err != nil { t.Fatal(err) }
+	if !hasStructural(issues, "minLength", "/label") || !hasStructural(issues, "minimum", "/limits") || !hasStructural(issues, "exclusiveMinimum", "/count") || !hasStructural(issues, "exclusiveMinimum", "/ratio") { t.Fatalf("raw lower issues: %+v", issues) }
+	issues, err = ValidateDocJSON([]byte("{\"label\":\"oversized\",\"limits\":4,\"count\":4,\"ratio\":2}"))
+	if err != nil { t.Fatal(err) }
+	if !hasStructural(issues, "maxLength", "/label") || !hasStructural(issues, "maximum", "/limits") || !hasStructural(issues, "exclusiveMaximum", "/count") || !hasStructural(issues, "exclusiveMaximum", "/ratio") { t.Fatalf("raw upper issues: %+v", issues) }
+	issues, err = ValidateDocJSON([]byte("{\"flag\":null,\"label\":\"no\",\"limits\":3,\"count\":3,\"ratio\":1.5}"))
+	if err != nil { t.Fatal(err) }
+	if !hasStructural(issues, "type", "/flag") || !hasStructural(issues, "enum", "/label") || !hasStructural(issues, "enum", "/limits") || !hasStructural(issues, "enum", "/count") || !hasStructural(issues, "enum", "/ratio") { t.Fatalf("raw membership issues: %+v", issues) }
+}
+`
+	runGenerated(t, vs, "Doc", "primitiveenums", testSrc)
+}
+
 func TestEmitCompilesAvenor(t *testing.T) {
 	spec, err := Build(aivenValueSchema(t), "Workflow")
 	if err != nil {

@@ -86,6 +86,10 @@ func specNeedsImports(spec *Spec) (utf8 bool) {
 				if f.Type.Scalar == ScalarString && (f.MinLength != nil || f.MaxLength != nil) {
 					utf8 = true
 				}
+			case KindEnum:
+				if td := spec.Lookup(f.Type.Ref); td != nil && td.Scalar == ScalarString && (f.MinLength != nil || f.MaxLength != nil) {
+					utf8 = true
+				}
 			}
 		}
 	}
@@ -106,6 +110,22 @@ func RootGoTypes(spec *Spec) map[string]string {
 	out := make(map[string]string, len(spec.Root))
 	for _, f := range spec.Root {
 		out[f.Name] = "*" + baseGoType(f.Type)
+	}
+	return out
+}
+
+// RootUnderlyingGoTypes maps root enum fields to the scalar type used for
+// availability emptiness semantics. Ordinary scalar overrides already carry
+// their own semantics; only named enum types need this side channel.
+func RootUnderlyingGoTypes(spec *Spec) map[string]string {
+	out := make(map[string]string)
+	for _, f := range spec.Root {
+		if f.Type.Kind != KindEnum {
+			continue
+		}
+		if td := spec.Lookup(f.Type.Ref); td != nil {
+			out[f.Name] = scalarGoType(td.Scalar)
+		}
 	}
 	return out
 }
@@ -165,12 +185,40 @@ func emitStruct(b *strings.Builder, name string, fields []FieldDef) {
 }
 
 func emitEnum(b *strings.Builder, td TypeDef) {
-	fmt.Fprintf(b, "type %s string\n\n", td.Name)
+	fmt.Fprintf(b, "type %s %s\n\n", td.Name, scalarGoType(td.Scalar))
 	b.WriteString("const (\n")
 	for _, v := range td.Values {
-		fmt.Fprintf(b, "\t%s%s %s = %q\n", td.Name, v.Name, td.Name, v.Wire)
+		fmt.Fprintf(b, "\t%s%s %s = %s\n", td.Name, v.Name, td.Name, enumWireLiteral(v.Wire))
 	}
 	b.WriteString(")\n\n")
+}
+
+func scalarGoType(scalar Scalar) string {
+	switch scalar {
+	case ScalarBool:
+		return "bool"
+	case ScalarInt:
+		return "int64"
+	case ScalarNumber:
+		return "float64"
+	default:
+		return "string"
+	}
+}
+
+func enumWireLiteral(value any) string {
+	switch value := value.(type) {
+	case string:
+		return fmt.Sprintf("%q", value)
+	case bool:
+		return fmt.Sprintf("%t", value)
+	case int64:
+		return fmt.Sprintf("%d", value)
+	case float64:
+		return fmt.Sprintf("%v", value)
+	default:
+		return "0"
+	}
 }
 
 // emitUnionDecoder renders a strict discriminator-based UnmarshalJSON for a union.

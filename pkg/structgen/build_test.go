@@ -227,10 +227,15 @@ func TestBuildUnionPreservesBranchConstraints(t *testing.T) {
 }
 
 func TestRootGoTypesPreservePresence(t *testing.T) {
-	vs := `{"type":"object","properties":{"title":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["title"]}`
-	got := RootGoTypes(mustBuild(t, vs, "Doc"))
-	if got["title"] != "*string" || got["tags"] != "*[]string" {
+	vs := `{"type":"object","properties":{"title":{"type":"string"},"mode":{"type":"string","enum":["","ready"]},"tags":{"type":"array","items":{"type":"string"}}},"required":["title"]}`
+	spec := mustBuild(t, vs, "Doc")
+	got := RootGoTypes(spec)
+	if got["title"] != "*string" || got["mode"] != "*Mode" || got["tags"] != "*[]string" {
 		t.Fatalf("root types = %#v, want presence-preserving pointers", got)
+	}
+	underlying := RootUnderlyingGoTypes(spec)
+	if len(underlying) != 1 || underlying["mode"] != "string" {
+		t.Fatalf("root underlying types = %#v, want only named-enum semantics", underlying)
 	}
 }
 
@@ -381,10 +386,43 @@ func TestBuildUnionDuplicateDiscriminator(t *testing.T) {
 	}
 }
 
-func TestBuildRejectsNonStringEnum(t *testing.T) {
+func TestBuildRejectsEnumValueMismatchedWithType(t *testing.T) {
 	vs := `{"type":"object","properties":{"mode":{"type":"string","enum":[1]}}}`
-	if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), "enum is not an array of strings") {
-		t.Fatalf("expected non-string enum rejection, got: %v", err)
+	if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), "enum value is not a string") {
+		t.Fatalf("expected mismatched enum rejection, got: %v", err)
+	}
+}
+
+func TestBuildPrimitiveEnums(t *testing.T) {
+	spec := mustBuild(t, `{"type":"object","properties":{
+		"flag":{"type":"boolean","enum":[true,false]},
+		"count":{"type":"integer","enum":[-1,2]},
+		"ratio":{"type":"number","enum":[0.5,2]}
+	}}`, "Doc")
+	for name, scalar := range map[string]Scalar{"Flag": ScalarBool, "Count": ScalarInt, "Ratio": ScalarNumber} {
+		td := spec.Lookup(name)
+		if td == nil || td.Kind != KindEnum || td.Scalar != scalar || len(td.Values) != 2 {
+			t.Fatalf("%s enum = %+v, want two %s values", name, td, scalar)
+		}
+	}
+}
+
+func TestBuildResolvesRFC6901EscapedDefinitionName(t *testing.T) {
+	spec := mustBuild(t, `{
+		"type":"object",
+		"properties":{"value":{"$ref":"#/$defs/a~1b~0c"}},
+		"$defs":{"a/b~c":{"type":"object","properties":{"name":{"type":"string"}}}}
+	}`, "Doc")
+	value := fieldByName(spec.Root, "value")
+	if value == nil || value.Type.Kind != KindObject || value.Type.Ref != "ABC" {
+		t.Fatalf("escaped reference type = %+v, want ABC object", value)
+	}
+	if spec.Lookup("ABC") == nil {
+		t.Fatal("escaped definition was not built")
+	}
+
+	if _, err := Build([]byte(`{"type":"object","properties":{"value":{"$ref":"#/$defs/a/b"}},"$defs":{"a/b":{"type":"string"}}}`), "Doc"); err == nil {
+		t.Fatal("unescaped slash reference should be rejected")
 	}
 }
 

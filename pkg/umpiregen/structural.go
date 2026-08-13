@@ -52,13 +52,18 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 		return "", false, nil
 	}
 
-	// Surface the structural root field types in the availability Fields struct.
+	// Surface structural root types in the availability Fields struct while
+	// retaining primitive semantics for named enum emptiness checks.
 	overrides := map[string]codegen.GoType{}
 	for name, t := range structgen.RootGoTypes(spec) {
 		overrides[name] = codegen.GoType(t)
 	}
+	underlying := map[string]codegen.GoType{}
+	for name, t := range structgen.RootUnderlyingGoTypes(spec) {
+		underlying[name] = codegen.GoType(t)
+	}
 
-	avail, err := generateAvailability(umpireJSON, cfg, overrides)
+	avail, err := generateAvailability(umpireJSON, cfg, overrides, underlying)
 	if err != nil {
 		return "", false, err
 	}
@@ -72,7 +77,7 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 
 // generateAvailability mirrors generateFromBytes but honors explicit field-type
 // overrides so the availability Fields struct can reference structural types.
-func generateAvailability(schemaJSON []byte, cfg Config, overrides map[string]codegen.GoType) (string, error) {
+func generateAvailability(schemaJSON []byte, cfg Config, overrides, underlying map[string]codegen.GoType) (string, error) {
 	s, err := schema.Parse(schemaJSON)
 	if err != nil {
 		return "", fmt.Errorf("parse schema: %w", err)
@@ -93,6 +98,7 @@ func generateAvailability(schemaJSON []byte, cfg Config, overrides map[string]co
 
 	gen := codegen.NewGenerator(cfg.SchemaName, cfg.PkgName, fieldsName, conditionsName, inferred)
 	gen.WithFieldTypeOverrides(overrides)
+	gen.WithFieldUnderlyingTypes(underlying)
 	gen.WithFields(s.Fields)
 	gen.WithRules(s.Rules)
 	gen.WithSchema(s)

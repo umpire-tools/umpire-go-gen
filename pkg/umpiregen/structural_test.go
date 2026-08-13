@@ -162,3 +162,52 @@ func TestMergedRuntime(t *testing.T) {
 `
 	runMerged(t, source, "smoke", testSrc)
 }
+
+func TestGenerateProfileStructural_NamedStringEnumUsesStringEmptiness(t *testing.T) {
+	profile := []byte(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"type":"object",
+			"properties":{
+				"choice":{"type":"string","enum":["ready","later"]},
+				"note":{"type":"string"}
+			},
+			"additionalProperties":false
+		},
+		"umpire":{
+			"version":1,
+			"fields":{"choice":{"isEmpty":"string"},"note":{"isEmpty":"string"}},
+			"rules":[]
+		}
+	}`)
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "enumempty", SchemaName: "Doc"})
+	if err != nil {
+		t.Fatalf("GenerateProfile() error: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("GenerateProfile() issues: %+v", issues)
+	}
+	testSrc := `
+func TestNamedEnumEmptiness(t *testing.T) {
+	empty := Choice("")
+	note := "present"
+	availability := Check(DocFields{Choice: &empty, Note: &note}, DocConditions{}, DocFields{})
+	if availability.Choice.Satisfied {
+		t.Fatalf("empty named string enum was satisfied: %+v", availability.Choice)
+	}
+	if depSatisfied(DocFields{Choice: &empty, Note: &note}, "Choice") {
+		t.Fatal("depSatisfied accepted an empty named string enum")
+	}
+
+	var fields DocFields
+	if err := json.Unmarshal([]byte("{\"choice\":\"ready\"}"), &fields); err != nil { t.Fatal(err) }
+	availability = Check(fields, DocConditions{}, DocFields{})
+	if !availability.Choice.Satisfied || !depSatisfied(fields, "Choice") {
+		t.Fatalf("non-empty named string enum was unsatisfied: %+v", availability.Choice)
+	}
+}
+`
+	runMerged(t, source, "enumempty", testSrc)
+}

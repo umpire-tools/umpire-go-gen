@@ -529,6 +529,268 @@ func TestParseProfile_ExcludedKeywordAnyOf(t *testing.T) {
 	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/x/anyOf")
 }
 
+func TestParseProfile_ClosedVocabularyExcludedKeywords(t *testing.T) {
+	tests := []struct {
+		name    string
+		keyword string
+		value   string
+	}{
+		{name: "composition allOf", keyword: "allOf", value: `[]`},
+		{name: "composition anyOf", keyword: "anyOf", value: `[]`},
+		{name: "composition not", keyword: "not", value: `{}`},
+		{name: "numeric multipleOf", keyword: "multipleOf", value: `2`},
+		{name: "array contains", keyword: "contains", value: `{}`},
+		{name: "conditional if", keyword: "if", value: `{}`},
+		{name: "conditional then", keyword: "then", value: `{}`},
+		{name: "conditional else", keyword: "else", value: `{}`},
+		{name: "tuple prefixItems", keyword: "prefixItems", value: `[]`},
+		{name: "array uniqueItems", keyword: "uniqueItems", value: `true`},
+		{name: "array minContains", keyword: "minContains", value: `1`},
+		{name: "array maxContains", keyword: "maxContains", value: `1`},
+		{name: "object dependentSchemas", keyword: "dependentSchemas", value: `{}`},
+		{name: "object dependentRequired", keyword: "dependentRequired", value: `{}`},
+		{name: "legacy dependencies", keyword: "dependencies", value: `{}`},
+		{name: "object patternProperties", keyword: "patternProperties", value: `{}`},
+		{name: "object propertyNames", keyword: "propertyNames", value: `{}`},
+		{name: "object minProperties", keyword: "minProperties", value: `1`},
+		{name: "object maxProperties", keyword: "maxProperties", value: `1`},
+		{name: "string pattern", keyword: "pattern", value: `"x"`},
+		{name: "format", keyword: "format", value: `"email"`},
+		{name: "content encoding", keyword: "contentEncoding", value: `"base64"`},
+		{name: "content media type", keyword: "contentMediaType", value: `"text/plain"`},
+		{name: "content schema", keyword: "contentSchema", value: `{}`},
+		{name: "dynamic ref", keyword: "$dynamicRef", value: `"#node"`},
+		{name: "dynamic anchor", keyword: "$dynamicAnchor", value: `"node"`},
+		{name: "recursive ref", keyword: "$recursiveRef", value: `"#"`},
+		{name: "recursive anchor", keyword: "$recursiveAnchor", value: `true`},
+		{name: "schema default", keyword: "default", value: `"x"`},
+		{name: "nullable", keyword: "nullable", value: `true`},
+		{name: "unevaluated items", keyword: "unevaluatedItems", value: `false`},
+		{name: "unevaluated properties", keyword: "unevaluatedProperties", value: `false`},
+		{name: "schema id", keyword: "$id", value: `"x"`},
+		{name: "schema anchor", keyword: "$anchor", value: `"x"`},
+		{name: "schema vocabulary", keyword: "$vocabulary", value: `{}`},
+		{name: "schema comment", keyword: "$comment", value: `"x"`},
+		{name: "legacy definitions", keyword: "definitions", value: `{}`},
+		{name: "legacy additionalItems", keyword: "additionalItems", value: `false`},
+		{name: "annotation examples", keyword: "examples", value: `[]`},
+		{name: "annotation readOnly", keyword: "readOnly", value: `true`},
+		{name: "annotation writeOnly", keyword: "writeOnly", value: `true`},
+		{name: "annotation deprecated", keyword: "deprecated", value: `true`},
+		{name: "unknown extension", keyword: "x-custom", value: `true`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			schema := fmt.Sprintf(`{"type":"string",%q:%s}`, test.keyword, test.value)
+			_, issues, err := GenerateProfile(profileSchemaFixtureJSON(schema, ""), Config{PkgName: "closedvocabulary", SchemaName: "ClosedVocabulary"})
+			if err != nil {
+				t.Fatalf("GenerateProfile() error: %v", err)
+			}
+			assertHasIssue(t, issues, "unsupportedKeyword", "/valueSchema/properties/value/"+escapeProfilePointer(test.keyword))
+		})
+	}
+}
+
+func TestParseProfile_UnsupportedAndUntypedSchemaShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		path   string
+	}{
+		{name: "untyped", schema: `{}`, path: "/valueSchema/properties/value"},
+		{name: "null type", schema: `{"type":"null"}`, path: "/valueSchema/properties/value/type"},
+		{name: "nullable type array", schema: `{"type":["string","null"]}`, path: "/valueSchema/properties/value/type"},
+		{name: "tuple items array", schema: `{"type":"array","items":[{"type":"string"}]}`, path: "/valueSchema/properties/value/items"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := parseProfileSchemaFixture(t, test.schema, "")
+			assertHasIssue(t, result.Issues, "invalidProfile", test.path)
+		})
+	}
+}
+
+func TestParseProfile_AcceptsPrimitiveEnumAndConstVocabulary(t *testing.T) {
+	for name, schema := range map[string]string{
+		"string enum":   `{"type":"string","enum":["a","b"]}`,
+		"boolean enum":  `{"type":"boolean","enum":[true,false]}`,
+		"integer enum":  `{"type":"integer","enum":[1,2]}`,
+		"number enum":   `{"type":"number","enum":[1.5,2]}`,
+		"string const":  `{"type":"string","const":"a"}`,
+		"boolean const": `{"type":"boolean","const":true}`,
+		"integer const": `{"type":"integer","const":1}`,
+		"number const":  `{"type":"number","const":1.5}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := parseProfileSchemaFixture(t, schema, "")
+			if len(result.Issues) != 0 {
+				t.Fatalf("accepted schema returned issues: %+v", result.Issues)
+			}
+		})
+	}
+}
+
+func TestParseProfile_UnsafeSchemaLiteral(t *testing.T) {
+	result := parseProfileSchemaFixture(t, `{"type":"integer","const":9007199254740992}`, "")
+	assertHasIssue(t, result.Issues, "unsafeNumber", "/valueSchema/properties/value/const")
+}
+
+func TestParseProfile_RejectsUnrepresentableCountsAndIntegerBounds(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		schema string
+		path   string
+	}{
+		{name: "minItems", schema: `{"type":"array","items":{"type":"string"},"minItems":9007199254740992}`, path: "/valueSchema/properties/value/minItems"},
+		{name: "maxItems", schema: `{"type":"array","items":{"type":"string"},"maxItems":9007199254740992}`, path: "/valueSchema/properties/value/maxItems"},
+		{name: "minLength", schema: `{"type":"string","minLength":9007199254740992}`, path: "/valueSchema/properties/value/minLength"},
+		{name: "maxLength", schema: `{"type":"string","maxLength":9007199254740992}`, path: "/valueSchema/properties/value/maxLength"},
+		{name: "integer bound", schema: `{"type":"integer","maximum":9007199254740992}`, path: "/valueSchema/properties/value/maximum"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := parseProfileSchemaFixture(t, test.schema, "")
+			assertHasIssue(t, result.Issues, "unsafeNumber", test.path)
+		})
+	}
+
+	result := parseProfileSchemaFixture(t, `{"type":"string","maxLength":9007199254740991}`, "")
+	if len(result.Issues) != 0 {
+		t.Fatalf("safe-integer count boundary returned issues: %+v", result.Issues)
+	}
+}
+
+func TestParseProfile_ResolvesEscapedDefinitionReferences(t *testing.T) {
+	profile := fmt.Sprintf(`{
+		"$schema":%q,
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema",
+			"type":"object",
+			"properties":{"value":{"$ref":"#/$defs/a~1b~0c"}},
+			"additionalProperties":false,
+			"$defs":{"a/b~c":{"type":"object","properties":{"name":{"type":"string"}},"additionalProperties":false}}
+		},
+		"umpire":{"version":1,"fields":{"value":{"isEmpty":"present"}},"rules":[]}
+	}`, ProfileSchemaURI)
+	source, issues, err := GenerateProfile([]byte(profile), Config{PkgName: "escapedref", SchemaName: "EscapedRef"})
+	if err != nil {
+		t.Fatalf("GenerateProfile() error: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("escaped reference returned issues: %+v", issues)
+	}
+	if !strings.Contains(source, "func DecodeEscapedRef") {
+		t.Fatalf("escaped reference did not produce structural output")
+	}
+
+	bad := strings.Replace(profile, "#/$defs/a~1b~0c", "#/$defs/a~2b~0c", 1)
+	result, err := ParseProfile([]byte(bad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHasIssue(t, result.Issues, "invalidReference", "/valueSchema/properties/value/$ref")
+}
+
+func TestParseProfile_DefinitionPathsEscapePropertyNames(t *testing.T) {
+	schema := `{"type":"object","properties":{"a/b~c":{"type":"string","multipleOf":2}},"additionalProperties":false}`
+	result := parseProfileSchemaFixture(t, schema, "")
+	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/value/properties/a~1b~0c/multipleOf")
+}
+
+func TestParseProfile_OneOfBranchesAreRecursivelyValidated(t *testing.T) {
+	schema := `{"oneOf":[
+		{"type":"object","properties":{"kind":{"const":"a"},"payload":{"$ref":"#/bad"}},"required":["kind"],"additionalProperties":false},
+		{"type":"object","properties":{"kind":{"const":"b"},"count":{"type":"integer","multipleOf":2}},"required":["kind"],"additionalProperties":false}
+	]}`
+	result := parseProfileSchemaFixture(t, schema, "")
+	assertHasIssue(t, result.Issues, "invalidReference", "/valueSchema/properties/value/oneOf/0/properties/payload/$ref")
+	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/value/oneOf/1/properties/count/multipleOf")
+}
+
+func TestParseProfile_UnionBranchObjectInvariants(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		branch string
+		path   string
+	}{
+		{name: "missing properties", branch: `{"type":"object","required":[],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0"},
+		{name: "non-object properties", branch: `{"type":"object","properties":[],"required":[],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0"},
+		{name: "undeclared required", branch: `{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind","missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/oneOf/0/required/1"},
+		{name: "additional properties true", branch: `{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true}`, path: "/valueSchema/properties/value/oneOf/0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			schema := fmt.Sprintf(`{"oneOf":[%s,{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, test.branch)
+			result := parseProfileSchemaFixture(t, schema, "")
+			assertHasIssue(t, result.Issues, "invalidProfile", test.path)
+		})
+	}
+}
+
+func TestParseProfile_ObjectInvariants(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		path   string
+	}{
+		{name: "nested missing explicit type", schema: `{"properties":{},"additionalProperties":false}`, path: "/valueSchema/properties/value"},
+		{name: "nested properties not object", schema: `{"type":"object","properties":[],"additionalProperties":false}`, path: "/valueSchema/properties/value"},
+		{name: "nested not closed", schema: `{"type":"object","properties":{}}`, path: "/valueSchema/properties/value"},
+		{name: "nested required undeclared", schema: `{"type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/properties/value/required/0"},
+		{name: "union branch not closed", schema: `{"oneOf":[{"type":"object","properties":{"kind":{"const":"a"}},"required":["kind"],"additionalProperties":true},{"type":"object","properties":{"kind":{"const":"b"}},"required":["kind"],"additionalProperties":false}]}`, path: "/valueSchema/properties/value/oneOf/0"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := parseProfileSchemaFixture(t, test.schema, "")
+			assertHasIssue(t, result.Issues, "invalidProfile", test.path)
+		})
+	}
+
+	rootCases := []struct {
+		name        string
+		valueSchema string
+		path        string
+	}{
+		{name: "root missing properties", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false}`, path: "/valueSchema"},
+		{name: "root not closed", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":true}`, path: "/valueSchema"},
+		{name: "root required undeclared", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"required":["missing"],"additionalProperties":false}`, path: "/valueSchema/required/0"},
+		{name: "root union", valueSchema: `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false,"oneOf":[]}`, path: "/valueSchema/oneOf"},
+	}
+	for _, test := range rootCases {
+		t.Run(test.name, func(t *testing.T) {
+			profile := fmt.Sprintf(`{"$schema":%q,"profileVersion":1,"valueSchema":%s,"umpire":{"version":1,"fields":{},"rules":[]}}`, ProfileSchemaURI, test.valueSchema)
+			result, err := ParseProfile([]byte(profile))
+			if err != nil {
+				t.Fatalf("ParseProfile() error: %v", err)
+			}
+			assertHasIssue(t, result.Issues, "invalidProfile", test.path)
+		})
+	}
+}
+
+func TestParseProfile_ExplicitNullDefault(t *testing.T) {
+	result := parseProfileSchemaFixture(t, `{"type":"string"}`, `,"default":null`)
+	assertHasIssue(t, result.Issues, "invalidDefault", "/umpire/fields/value/default")
+}
+
+func parseProfileSchemaFixture(t *testing.T, propertySchema, fieldSuffix string) *ProfileResult {
+	t.Helper()
+	result, err := ParseProfile(profileSchemaFixtureJSON(propertySchema, fieldSuffix))
+	if err != nil {
+		t.Fatalf("ParseProfile() error: %v", err)
+	}
+	return result
+}
+
+func profileSchemaFixtureJSON(propertySchema, fieldSuffix string) []byte {
+	return []byte(fmt.Sprintf(`{
+		"$schema":%q,
+		"profileVersion":1,
+		"valueSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"value":%s},"additionalProperties":false},
+		"umpire":{"version":1,"fields":{"value":{"isEmpty":"present"%s}},"rules":[]}
+	}`, ProfileSchemaURI, propertySchema, fieldSuffix))
+}
+
 func TestParseProfile_InvalidDefault(t *testing.T) {
 	data := `{
 		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
@@ -610,7 +872,6 @@ func TestParseProfile_DefaultConstraintsThroughLocalReference(t *testing.T) {
 		{name: "safeInteger", schema: `{"type":"integer"}`, defaultJSON: `9007199254740992`},
 		{name: "object base contract", schema: `{"type":"object","properties":{},"additionalProperties":false}`, defaultJSON: `{}`},
 		{name: "array base contract", schema: `{"type":"array","items":{"type":"string"}}`, defaultJSON: `[]`},
-		{name: "irrelevant keyword tolerated", schema: `{"type":"string","contains":{"type":"string"},"unevaluatedProperties":false}`, defaultJSON: `"ok"`, valid: true},
 		{
 			name:        "valid complete constraints",
 			schema:      `{"type":"string","enum":["ok","yes"],"const":"ok","minLength":2,"maxLength":2}`,
@@ -1185,8 +1446,8 @@ func TestParseProfile_RefInOneOfCycleDetection(t *testing.T) {
 	}
 }
 
-// TestParseProfile_ExcludedKeywordUnevaluatedProperties recurses into
-// unevaluatedProperties to detect excluded keywords in its subschema.
+// TestParseProfile_ExcludedKeywordUnevaluatedProperties rejects the unsupported
+// keyword at its own path without treating its value as a supported subschema.
 func TestParseProfile_ExcludedKeywordUnevaluatedProperties(t *testing.T) {
 	data := `{
 		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
@@ -1216,11 +1477,11 @@ func TestParseProfile_ExcludedKeywordUnevaluatedProperties(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseProfile() error: %v", err)
 	}
-	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties/allOf")
+	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties")
 }
 
-// TestParseProfile_ExcludedKeywordUnevaluatedPropertiesNested checks that
-// unevaluatedProperties recursion reaches deeper nesting levels.
+// TestParseProfile_ExcludedKeywordUnevaluatedPropertiesNested confirms an
+// unsupported schema-valued keyword is rejected rather than silently recursed.
 func TestParseProfile_ExcludedKeywordUnevaluatedPropertiesNested(t *testing.T) {
 	data := `{
 		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
@@ -1255,7 +1516,7 @@ func TestParseProfile_ExcludedKeywordUnevaluatedPropertiesNested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseProfile() error: %v", err)
 	}
-	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties/properties/nested/unevaluatedProperties/allOf")
+	assertHasIssue(t, result.Issues, "unsupportedKeyword", "/valueSchema/properties/extra/unevaluatedProperties")
 }
 
 // TestParseProfile_DefaultBooleanMismatch checks that a non-boolean default for a

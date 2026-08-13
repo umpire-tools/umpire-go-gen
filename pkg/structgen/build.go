@@ -3,6 +3,7 @@ package structgen
 import (
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"sort"
 	"strings"
 
@@ -157,21 +158,16 @@ func (b *builder) resolve(raw json.RawMessage, hint, jsonName string, isDef bool
 		return b.resolveUnion(node, hint)
 	}
 
-	// Named enum: string + enum list.
-	if isScalar(node, "string") {
-		if hasNode(node, "enum") {
-			return b.resolveEnum(node, hint)
+	// Primitive enums become named types with the matching scalar underlying type.
+	for schemaType, scalar := range map[string]Scalar{
+		"string": ScalarString, "boolean": ScalarBool, "integer": ScalarInt, "number": ScalarNumber,
+	} {
+		if isScalar(node, schemaType) {
+			if hasNode(node, "enum") {
+				return b.resolveEnum(node, hint, scalar)
+			}
+			return FieldType{Kind: KindScalar, Scalar: scalar}, nil
 		}
-		return FieldType{Kind: KindScalar, Scalar: ScalarString}, nil
-	}
-	if isScalar(node, "boolean") {
-		return FieldType{Kind: KindScalar, Scalar: ScalarBool}, nil
-	}
-	if isScalar(node, "integer") {
-		return FieldType{Kind: KindScalar, Scalar: ScalarInt}, nil
-	}
-	if isScalar(node, "number") {
-		return FieldType{Kind: KindScalar, Scalar: ScalarNumber}, nil
 	}
 
 	// Array: homogeneous items → slice.
@@ -234,19 +230,64 @@ func (b *builder) resolveObjectFields(node map[string]json.RawMessage, name, jso
 	return fields, nil
 }
 
-// resolveEnum fills a named enum TypeDef and returns its field type.
-func (b *builder) resolveEnum(node map[string]json.RawMessage, hint string) (FieldType, error) {
-	var vals []string
-	if err := json.Unmarshal(node["enum"], &vals); err != nil {
-		return FieldType{}, fmt.Errorf("enum is not an array of strings")
+// resolveEnum fills a named primitive enum TypeDef and returns its field type.
+func (b *builder) resolveEnum(node map[string]json.RawMessage, hint string, scalar Scalar) (FieldType, error) {
+	var rawValues []json.RawMessage
+	if err := json.Unmarshal(node["enum"], &rawValues); err != nil || len(rawValues) == 0 {
+		return FieldType{}, fmt.Errorf("enum is not a non-empty array")
 	}
-	td := TypeDef{Name: hint, Kind: KindEnum, JSONName: hint}
-	for _, v := range vals {
-		td.Values = append(td.Values, EnumValue{Name: codegen.GoFieldName(v), Wire: v})
+	td := TypeDef{Name: hint, Kind: KindEnum, JSONName: hint, Scalar: scalar}
+	for i, raw := range rawValues {
+		value, err := enumValue(raw, scalar)
+		if err != nil {
+			return FieldType{}, err
+		}
+		name := fmt.Sprintf("Value%d", i+1)
+		if s, ok := value.(string); ok {
+			name = codegen.GoFieldName(s)
+		} else if v, ok := value.(bool); ok {
+			if v {
+				name = "True"
+			} else {
+				name = "False"
+			}
+		}
+		td.Values = append(td.Values, EnumValue{Name: name, Wire: value})
 	}
 	idx := b.register(td)
 	b.types[idx] = td
 	return FieldType{Kind: KindEnum, Ref: hint}, nil
+}
+
+func enumValue(raw json.RawMessage, scalar Scalar) (any, error) {
+	switch scalar {
+	case ScalarString:
+		var value string
+		if json.Unmarshal(raw, &value) != nil {
+			return nil, fmt.Errorf("enum value is not a string")
+		}
+		return value, nil
+	case ScalarBool:
+		var value bool
+		if json.Unmarshal(raw, &value) != nil {
+			return nil, fmt.Errorf("enum value is not a boolean")
+		}
+		return value, nil
+	case ScalarInt:
+		value, ok := new(big.Rat).SetString(strings.TrimSpace(string(raw)))
+		if !ok || !value.IsInt() || !value.Num().IsInt64() {
+			return nil, fmt.Errorf("enum value is not an integer")
+		}
+		return value.Num().Int64(), nil
+	case ScalarNumber:
+		var value float64
+		if json.Unmarshal(raw, &value) != nil {
+			return nil, fmt.Errorf("enum value is not a number")
+		}
+		return value, nil
+	default:
+		return nil, fmt.Errorf("unsupported enum scalar %q", scalar)
+	}
 }
 
 // resolveUnion fills a named union TypeDef and returns its field type. The union
@@ -333,7 +374,7 @@ func (b *builder) resolveUnion(node map[string]json.RawMessage, hint string) (Fi
 	// The discriminator becomes a named enum type (e.g. ActionKind) built from the
 	// union's branch const values.
 	enumName := hint + "Kind"
-	enumT := TypeDef{Name: enumName, Kind: KindEnum, JSONName: hint}
+	enumT := TypeDef{Name: enumName, Kind: KindEnum, JSONName: hint, Scalar: ScalarString}
 	for _, v := range uniqueSorted(branchOrder) {
 		enumT.Values = append(enumT.Values, EnumValue{Name: codegen.GoFieldName(v), Wire: v})
 	}
@@ -446,6 +487,12 @@ func attachConstraints(fd *FieldDef, raw json.RawMessage) {
 	if v, ok := numField(node, "maximum"); ok {
 		fd.Maximum = &v
 	}
+	if v, ok := numField(node, "exclusiveMinimum"); ok {
+		fd.ExclusiveMinimum = &v
+	}
+	if v, ok := numField(node, "exclusiveMaximum"); ok {
+		fd.ExclusiveMaximum = &v
+	}
 	if c, ok := node["const"]; ok {
 		fd.HasConst = true
 		_ = json.Unmarshal(c, &fd.Const)
@@ -455,11 +502,34 @@ func attachConstraints(fd *FieldDef, raw json.RawMessage) {
 // ---- helpers ----
 
 func refName(ref string) string {
-	const p = "#/$defs/"
-	if strings.HasPrefix(ref, p) {
-		return codegen.GoFieldName(strings.TrimPrefix(ref, p))
+	const prefix = "#/$defs/"
+	if !strings.HasPrefix(ref, prefix) {
+		return ""
 	}
-	return ""
+	token := strings.TrimPrefix(ref, prefix)
+	if token == "" || strings.Contains(token, "/") {
+		return ""
+	}
+	var decoded strings.Builder
+	for i := 0; i < len(token); i++ {
+		if token[i] != '~' {
+			decoded.WriteByte(token[i])
+			continue
+		}
+		if i+1 >= len(token) {
+			return ""
+		}
+		i++
+		switch token[i] {
+		case '0':
+			decoded.WriteByte('~')
+		case '1':
+			decoded.WriteByte('/')
+		default:
+			return ""
+		}
+	}
+	return codegen.GoFieldName(decoded.String())
 }
 
 func kindOfRef(k Kind) Kind {
@@ -517,11 +587,15 @@ func intField(node map[string]json.RawMessage, key string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	var f float64
-	if json.Unmarshal(raw, &f) != nil {
+	value, ok := new(big.Rat).SetString(strings.TrimSpace(string(raw)))
+	if !ok || !value.IsInt() || !value.Num().IsInt64() {
 		return 0, false
 	}
-	return int(f), true
+	integer := value.Num().Int64()
+	if int64(int(integer)) != integer {
+		return 0, false
+	}
+	return int(integer), true
 }
 
 func numField(node map[string]json.RawMessage, key string) (float64, bool) {

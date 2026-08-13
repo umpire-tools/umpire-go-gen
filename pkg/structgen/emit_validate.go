@@ -149,8 +149,9 @@ func emitArrayEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPa
 	b.WriteString("\t}\n")
 }
 
-// emitEnumValidate checks an enum-typed field's value is one of its declared
-// constants (direct field, not array).
+// emitEnumValidate checks both membership and constraints attached to an
+// enum-typed field. Enum fields retain a named Go type, so use the enum's
+// underlying scalar solely to select the applicable constraint checks.
 func emitEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPath string) {
 	enum := spec.Lookup(f.Type.Ref)
 	if enum == nil {
@@ -167,6 +168,13 @@ func emitEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPath st
 	fmt.Fprintf(b, "\tdefault:\n")
 	emitIssue(b, "enum", tagPath)
 	b.WriteString("\t}\n")
+	constraintField := f
+	constraintField.Type = FieldType{Kind: KindScalar, Scalar: enum.Scalar}
+	constraintValue := val
+	if enum.Scalar == ScalarString {
+		constraintValue = "string(" + val + ")"
+	}
+	emitScalarConstraints(b, constraintField, constraintValue, tagPath)
 	if !alwaysPresent(f) {
 		b.WriteString("\t}\n")
 	}
@@ -198,6 +206,16 @@ func emitScalarConstraints(b *strings.Builder, f FieldDef, val, tagPath string) 
 			emitIssue(b, "maximum", tagPath)
 			b.WriteString("\t}\n")
 		}
+		if f.ExclusiveMinimum != nil {
+			fmt.Fprintf(b, "\tif float64(%s) <= %v {\n", val, *f.ExclusiveMinimum)
+			emitIssue(b, "exclusiveMinimum", tagPath)
+			b.WriteString("\t}\n")
+		}
+		if f.ExclusiveMaximum != nil {
+			fmt.Fprintf(b, "\tif float64(%s) >= %v {\n", val, *f.ExclusiveMaximum)
+			emitIssue(b, "exclusiveMaximum", tagPath)
+			b.WriteString("\t}\n")
+		}
 	case ScalarNumber:
 		if f.Minimum != nil {
 			fmt.Fprintf(b, "\tif %s < %v {\n", val, *f.Minimum)
@@ -207,6 +225,16 @@ func emitScalarConstraints(b *strings.Builder, f FieldDef, val, tagPath string) 
 		if f.Maximum != nil {
 			fmt.Fprintf(b, "\tif %s > %v {\n", val, *f.Maximum)
 			emitIssue(b, "maximum", tagPath)
+			b.WriteString("\t}\n")
+		}
+		if f.ExclusiveMinimum != nil {
+			fmt.Fprintf(b, "\tif %s <= %v {\n", val, *f.ExclusiveMinimum)
+			emitIssue(b, "exclusiveMinimum", tagPath)
+			b.WriteString("\t}\n")
+		}
+		if f.ExclusiveMaximum != nil {
+			fmt.Fprintf(b, "\tif %s >= %v {\n", val, *f.ExclusiveMaximum)
+			emitIssue(b, "exclusiveMaximum", tagPath)
 			b.WriteString("\t}\n")
 		}
 	}

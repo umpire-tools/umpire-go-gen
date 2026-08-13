@@ -14,6 +14,8 @@ import (
 // ProfileSchemaURI is the required $schema value for a JSON Schema Composition Profile v1.
 const ProfileSchemaURI = "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json"
 
+const maxProfileSafeInteger int64 = 9007199254740991
+
 // Profile wraps the parsed fields of a JSON Schema Composition Profile v1.
 type Profile struct {
 	UmpireJSON      []byte
@@ -135,219 +137,526 @@ func requireKeys(raw map[string]json.RawMessage, keys ...string) error {
 	return nil
 }
 
-// validateValueSchema walks a valueSchema and enforces profile-level rules.
+// validateValueSchema walks the closed Profile v1 schema vocabulary. Schema
+// paths are relative to valueSchema until an issue is emitted.
 func validateValueSchema(raw json.RawMessage) []DefinitionIssue {
-	var issues []DefinitionIssue
 	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return issues
+	if err := json.Unmarshal(raw, &doc); err != nil || doc == nil {
+		return []DefinitionIssue{{Code: "invalidProfile", Path: "/valueSchema"}}
 	}
-
-	issues = append(issues, checkExcludedKeywords("", doc)...)
 
 	var defs map[string]json.RawMessage
-	if defsRaw, ok := doc["$defs"]; ok {
-		_ = json.Unmarshal(defsRaw, &defs)
+	if defsRaw, ok := doc["$defs"]; ok && rawJSONObject(defsRaw, &defs) {
+		// Root definitions are made available to every recursive reference check.
 	}
 
-	if propsRaw, ok := doc["properties"]; ok {
-		var props map[string]json.RawMessage
-		if json.Unmarshal(propsRaw, &props) == nil {
-			for name, propRaw := range props {
-				issues = append(issues, validatePropertySchema("/properties/"+name, propRaw, defs)...)
+	issues := validateSchemaObject("", raw, defs, schemaValidationContext{root: true})
+	if defs != nil {
+		for _, name := range detectCycles(buildRefGraph(defs)) {
+			issues = append(issues, DefinitionIssue{
+				Code: "referenceCycle",
+				Path: "/valueSchema/$defs/" + escapeProfilePointer(name),
+			})
+		}
+	}
+	return issues
+}
+
+// supportedSchemaKeywords is deliberately an allowlist. Profile v1 is closed:
+// every JSON Schema keyword not listed here is rejected rather than ignored.
+var supportedSchemaKeywords = map[string]bool{
+	"type": true, "properties": true, "required": true, "additionalProperties": true,
+	"items": true, "minItems": true, "maxItems": true,
+	"minLength": true, "maxLength": true,
+	"minimum": true, "maximum": true, "exclusiveMinimum": true, "exclusiveMaximum": true,
+	"enum": true, "const": true, "$ref": true, "oneOf": true,
+	"title": true, "description": true,
+	// These two are accepted only at the value-schema root.
+	"$schema": true, "$defs": true,
+}
+
+type schemaValidationContext struct {
+	root              bool
+	untypedConstNames map[string]bool
+	allowUntypedConst bool
+}
+
+func validateSchemaObject(prefix string, raw json.RawMessage, rootDefs map[string]json.RawMessage, ctx schemaValidationContext) []DefinitionIssue {
+	path := "/valueSchema" + prefix
+	var obj map[string]json.RawMessage
+	if !rawJSONObject(raw, &obj) {
+		return []DefinitionIssue{{Code: "invalidProfile", Path: path}}
+	}
+
+	var issues []DefinitionIssue
+	unsupported := false
+	keys := sortedRawKeys(obj)
+	for _, key := range keys {
+		if !supportedSchemaKeywords[key] || (key == "$schema" && !ctx.root) || (key == "$defs" && !ctx.root) {
+			unsupported = true
+			issues = append(issues, DefinitionIssue{
+				Code: "unsupportedKeyword",
+				Path: path + "/" + escapeProfilePointer(key),
+			})
+		}
+	}
+	for _, key := range []string{"title", "description"} {
+		if raw, ok := obj[key]; ok {
+			var value string
+			if json.Unmarshal(raw, &value) != nil {
+				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/" + key})
 			}
 		}
 	}
-
-	if defs != nil {
-		refGraph := buildRefGraph(defs)
-		for _, p := range detectCycles(refGraph) {
-			issues = append(issues, DefinitionIssue{
-				Code: "referenceCycle",
-				Path: fmt.Sprintf("/valueSchema/$defs/%s", p),
-			})
-		}
-		for name, defRaw := range defs {
-			issues = append(issues, validatePropertySchema("/$defs/"+name, defRaw, defs)...)
-		}
-	}
-	return issues
-}
-
-var excludedKeywords = map[string]bool{
-	"allOf": true, "anyOf": true, "not": true,
-	"uniqueItems": true, "pattern": true, "format": true,
-}
-
-func checkExcludedKeywords(prefix string, obj map[string]json.RawMessage) []DefinitionIssue {
-	var issues []DefinitionIssue
-	for key := range obj {
-		if excludedKeywords[key] {
-			issues = append(issues, DefinitionIssue{
-				Code: "unsupportedKeyword",
-				Path: fmt.Sprintf("/valueSchema%s/%s", prefix, key),
-			})
-		}
-	}
-	return issues
-}
-
-func validatePropertySchema(prefix string, raw json.RawMessage, rootDefs map[string]json.RawMessage) []DefinitionIssue {
-	var issues []DefinitionIssue
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil
-	}
-
-	issues = append(issues, checkExcludedKeywords(prefix, obj)...)
 
 	if refRaw, ok := obj["$ref"]; ok {
 		var ref string
 		targetExists := false
-		if json.Unmarshal(refRaw, &ref) == nil && strings.HasPrefix(ref, "#/$defs/") {
-			target := strings.TrimPrefix(ref, "#/$defs/")
-			_, targetExists = rootDefs[target]
+		if json.Unmarshal(refRaw, &ref) == nil {
+			if target, ok := localDefinitionReference(ref); ok {
+				_, targetExists = rootDefs[target]
+			}
 		}
-		if !targetExists {
-			issues = append(issues, DefinitionIssue{
-				Code: "invalidReference",
-				Path: fmt.Sprintf("/valueSchema%s/$ref", prefix),
-			})
+		// A Profile v1 reference is the entire schema object. Annotations and
+		// validation siblings would change 2020-12 reference semantics and are
+		// therefore rejected too.
+		if !targetExists || len(obj) != 1 {
+			issues = append(issues, DefinitionIssue{Code: "invalidReference", Path: path + "/$ref"})
 		}
+		return issues
 	}
 
 	if oneOfRaw, ok := obj["oneOf"]; ok {
-		issues = append(issues, validateOneOf(prefix, oneOfRaw)...)
-	}
-
-	// Recurse into schema-containing keywords.
-	recurseKeys := []string{"items", "contains", "unevaluatedItems", "if", "then", "else", "unevaluatedProperties"}
-	for _, key := range recurseKeys {
-		if subRaw, ok := obj[key]; ok {
-			issues = append(issues, validatePropertySchema(prefix+"/"+key, subRaw, rootDefs)...)
+		if ctx.root {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/oneOf"})
+		}
+		issues = append(issues, validateOneOf(prefix, oneOfRaw, rootDefs, !ctx.root)...)
+		if !ctx.root {
+			// A tagged union is a complete schema shape in Profile v1.
+			for _, key := range keys {
+				if key != "oneOf" && key != "title" && key != "description" && supportedSchemaKeywords[key] {
+					issues = append(issues, DefinitionIssue{Code: "invalidDiscriminator", Path: path + "/oneOf"})
+					break
+				}
+			}
+			return issues
 		}
 	}
 
-	if piRaw, ok := obj["prefixItems"]; ok {
-		var pi []json.RawMessage
-		if json.Unmarshal(piRaw, &pi) == nil {
-			for i, item := range pi {
-				issues = append(issues, validatePropertySchema(fmt.Sprintf("%s/prefixItems/%d", prefix, i), item, rootDefs)...)
+	// The only intentionally untyped schema is a tagged-union discriminator.
+	if ctx.allowUntypedConst {
+		if _, ok := obj["const"]; ok {
+			complete := true
+			for _, key := range keys {
+				if key != "const" && key != "title" && key != "description" {
+					complete = false
+					break
+				}
+			}
+			if complete {
+				return issues
 			}
 		}
 	}
 
-	if propsRaw, ok := obj["properties"]; ok {
+	var schemaType string
+	typeRaw, hasType := obj["type"]
+	if !hasType {
+		// An unsupported applicator often forms an intentionally untyped schema.
+		// Report the unsupported keyword, not a secondary shape issue.
+		if !unsupported {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
+		}
+		return issues
+	}
+	if json.Unmarshal(typeRaw, &schemaType) != nil {
+		issuePath := path + "/type"
+		if ctx.root {
+			issuePath = path
+		}
+		issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: issuePath})
+		return issues
+	}
+	if schemaType != "string" && schemaType != "number" && schemaType != "integer" && schemaType != "boolean" && schemaType != "array" && schemaType != "object" {
+		issuePath := path + "/type"
+		if ctx.root {
+			issuePath = path
+		}
+		issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: issuePath})
+		return issues
+	}
+	if ctx.root && schemaType != "object" {
+		// validateVSMeta emits this same root issue; deduplication keeps one tuple.
+		issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
+		return issues
+	}
+
+	issues = append(issues, validateKeywordPlacement(path, schemaType, obj)...)
+	issues = append(issues, validateEnumAndConst(path, schemaType, obj)...)
+
+	switch schemaType {
+	case "object":
 		var props map[string]json.RawMessage
-		if json.Unmarshal(propsRaw, &props) == nil {
-			for name, propRaw := range props {
-				issues = append(issues, validatePropertySchema(prefix+"/properties/"+name, propRaw, rootDefs)...)
+		propsRaw, hasProps := obj["properties"]
+		if !hasProps || !rawJSONObject(propsRaw, &props) {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
+			return issues
+		}
+		var closed bool
+		if rawClosed, ok := obj["additionalProperties"]; !ok || json.Unmarshal(rawClosed, &closed) != nil || closed {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
+		}
+		if requiredRaw, ok := obj["required"]; ok {
+			var required []string
+			if json.Unmarshal(requiredRaw, &required) != nil {
+				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/required"})
+			} else {
+				seen := make(map[string]bool, len(required))
+				for i, name := range required {
+					if seen[name] || props[name] == nil {
+						issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: fmt.Sprintf("%s/required/%d", path, i)})
+					}
+					seen[name] = true
+				}
+			}
+		}
+		for _, name := range sortedRawKeys(props) {
+			childCtx := schemaValidationContext{allowUntypedConst: ctx.untypedConstNames[name]}
+			issues = append(issues, validateSchemaObject(prefix+"/properties/"+escapeProfilePointer(name), props[name], rootDefs, childCtx)...)
+		}
+		if ctx.root {
+			if defsRaw, ok := obj["$defs"]; ok {
+				var defs map[string]json.RawMessage
+				if !rawJSONObject(defsRaw, &defs) {
+					issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/$defs"})
+				} else {
+					for _, name := range sortedRawKeys(defs) {
+						issues = append(issues, validateSchemaObject(prefix+"/$defs/"+escapeProfilePointer(name), defs[name], rootDefs, schemaValidationContext{})...)
+					}
+				}
+			}
+		}
+	case "array":
+		itemsRaw, ok := obj["items"]
+		if !ok {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path})
+		} else {
+			var item map[string]json.RawMessage
+			if !rawJSONObject(itemsRaw, &item) {
+				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/items"})
+			} else {
+				issues = append(issues, validateSchemaObject(prefix+"/items", itemsRaw, rootDefs, schemaValidationContext{})...)
 			}
 		}
 	}
-
-	if defsRaw, ok := obj["$defs"]; ok {
-		var defs map[string]json.RawMessage
-		if json.Unmarshal(defsRaw, &defs) == nil {
-			for name, defRaw := range defs {
-				issues = append(issues, validatePropertySchema(prefix+"/$defs/"+name, defRaw, rootDefs)...)
-			}
-		}
-	}
-
 	return issues
 }
 
-// validateOneOf checks oneOf branches for tagged union rules.
-func validateOneOf(prefix string, raw json.RawMessage) []DefinitionIssue {
-	var oneOf []json.RawMessage
-	if err := json.Unmarshal(raw, &oneOf); err != nil || len(oneOf) == 0 {
+func validateKeywordPlacement(path, schemaType string, obj map[string]json.RawMessage) []DefinitionIssue {
+	allowed := map[string]bool{"type": true, "title": true, "description": true, "enum": true, "const": true}
+	switch schemaType {
+	case "object":
+		allowed["properties"], allowed["required"], allowed["additionalProperties"] = true, true, true
+	case "array":
+		allowed["items"], allowed["minItems"], allowed["maxItems"] = true, true, true
+	case "string":
+		allowed["minLength"], allowed["maxLength"] = true, true
+	case "number", "integer":
+		allowed["minimum"], allowed["maximum"] = true, true
+		allowed["exclusiveMinimum"], allowed["exclusiveMaximum"] = true, true
+	}
+	allowed["$schema"], allowed["$defs"] = true, true // root-only checks happen separately.
+
+	var issues []DefinitionIssue
+	for _, key := range sortedRawKeys(obj) {
+		if supportedSchemaKeywords[key] && !allowed[key] && key != "oneOf" {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/" + escapeProfilePointer(key)})
+		}
+	}
+	for _, key := range []string{"minItems", "maxItems", "minLength", "maxLength"} {
+		if raw, ok := obj[key]; ok {
+			valid, safe := isNonNegativeProfileCount(raw)
+			switch {
+			case !valid:
+				issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/" + key})
+			case !safe:
+				issues = append(issues, DefinitionIssue{Code: "unsafeNumber", Path: path + "/" + key})
+			}
+		}
+	}
+	for _, key := range []string{"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"} {
+		if raw, ok := obj[key]; ok {
+			if !isFiniteJSONNumber(raw) || (schemaType == "integer" && !isProfileSafeNumber(raw)) {
+				issues = append(issues, DefinitionIssue{Code: "unsafeNumber", Path: path + "/" + key})
+			}
+		}
+	}
+	return issues
+}
+
+func validateEnumAndConst(path, schemaType string, obj map[string]json.RawMessage) []DefinitionIssue {
+	var issues []DefinitionIssue
+	if enumRaw, ok := obj["enum"]; ok {
+		var rawValues []json.RawMessage
+		if json.Unmarshal(enumRaw, &rawValues) != nil || len(rawValues) == 0 {
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/enum"})
+		} else {
+			var seen []any
+			for _, valueRaw := range rawValues {
+				value, err := decodeJSONNumber(valueRaw)
+				matches, unsafe := profileLiteralMatchesType(value, schemaType)
+				duplicate := false
+				for _, previous := range seen {
+					if equalProfileLiteral(value, previous, schemaType) {
+						duplicate = true
+						break
+					}
+				}
+				if unsafe {
+					issues = append(issues, DefinitionIssue{Code: "unsafeNumber", Path: path + "/enum"})
+					break
+				}
+				if err != nil || duplicate || !matches {
+					issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/enum"})
+					break
+				}
+				seen = append(seen, value)
+			}
+		}
+	}
+	if constRaw, ok := obj["const"]; ok {
+		value, err := decodeJSONNumber(constRaw)
+		matches, unsafe := profileLiteralMatchesType(value, schemaType)
+		switch {
+		case unsafe:
+			issues = append(issues, DefinitionIssue{Code: "unsafeNumber", Path: path + "/const"})
+		case err != nil || !matches:
+			issues = append(issues, DefinitionIssue{Code: "invalidProfile", Path: path + "/const"})
+		}
+	}
+	return issues
+}
+
+func equalProfileLiteral(a, b any, schemaType string) bool {
+	if schemaType == "number" {
+		an, aOK := a.(json.Number)
+		bn, bOK := b.(json.Number)
+		if !aOK || !bOK {
+			return false
+		}
+		af, aErr := an.Float64()
+		bf, bErr := bn.Float64()
+		return aErr == nil && bErr == nil && af == bf
+	}
+	return equalJSONPrimitive(a, b)
+}
+
+func profileLiteralMatchesType(value any, schemaType string) (matches, unsafe bool) {
+	switch schemaType {
+	case "string":
+		_, matches = value.(string)
+	case "boolean":
+		_, matches = value.(bool)
+	case "number":
+		n, ok := value.(json.Number)
+		if !ok {
+			return false, false
+		}
+		f, err := n.Float64()
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+			return false, true
+		}
+		return true, false
+	case "integer":
+		n, ok := value.(json.Number)
+		if !ok {
+			return false, false
+		}
+		rat, ok := new(big.Rat).SetString(n.String())
+		if !ok || !rat.IsInt() {
+			return false, false
+		}
+		limit := big.NewRat(maxProfileSafeInteger, 1)
+		if rat.Cmp(limit) > 0 || rat.Cmp(new(big.Rat).Neg(limit)) < 0 {
+			return false, true
+		}
+		return true, false
+	default:
+		return false, false
+	}
+	return matches, false
+}
+
+// validateOneOf validates both the tagged-union contract and every branch
+// schema. Recursive issues retain the exact /oneOf/<index> branch path.
+func validateOneOf(prefix string, raw json.RawMessage, rootDefs map[string]json.RawMessage, requireTagged bool) []DefinitionIssue {
+	oneOfPath := "/valueSchema" + prefix + "/oneOf"
+	var branches []json.RawMessage
+	if err := json.Unmarshal(raw, &branches); err != nil || len(branches) == 0 {
+		if requireTagged {
+			return []DefinitionIssue{{Code: "invalidDiscriminator", Path: oneOfPath}}
+		}
 		return nil
 	}
 
-	var commonDiscriminator string
-	var branchIssues []DefinitionIssue
-
-	for i, branchRaw := range oneOf {
+	commonDiscriminator := ""
+	seenValues := make(map[string]bool)
+	invalidDiscriminator := false
+	branchObjects := make([]map[string]json.RawMessage, len(branches))
+	branchConstNames := make([]map[string]bool, len(branches))
+	for i, branchRaw := range branches {
 		var branch map[string]json.RawMessage
-		if err := json.Unmarshal(branchRaw, &branch); err != nil {
+		if !rawJSONObject(branchRaw, &branch) {
+			invalidDiscriminator = true
 			continue
 		}
-
-		propsRaw, hasProps := branch["properties"]
-		if !hasProps {
-			branchIssues = append(branchIssues, DefinitionIssue{
-				Code: "invalidDiscriminator",
-				Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix),
-			})
-			continue
-		}
+		branchObjects[i] = branch
 		var props map[string]json.RawMessage
-		if err := json.Unmarshal(propsRaw, &props); err != nil {
-			branchIssues = append(branchIssues, DefinitionIssue{
-				Code: "invalidDiscriminator",
-				Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix),
-			})
-			continue
-		}
-
 		var required []string
-		_ = json.Unmarshal(branch["required"], &required)
-		requiredSet := make(map[string]bool, len(required))
-		for _, r := range required {
-			requiredSet[r] = true
-		}
-
-		hasInvalidConst := false
-		var discriminators []string
-		for propName, propRaw := range props {
-			var propObj map[string]json.RawMessage
-			if json.Unmarshal(propRaw, &propObj) != nil {
-				continue
-			}
-			constRaw, hasConst := propObj["const"]
-			if !hasConst {
-				continue
-			}
-			var constVal string
-			if json.Unmarshal(constRaw, &constVal) != nil {
-				hasInvalidConst = true
-				continue
-			}
-			// Track every required property carrying a string const (not just the
-			// first) so discriminator detection is deterministic regardless of map
-			// iteration order. A tagged union requires exactly one discriminator.
-			if requiredSet[propName] {
-				discriminators = append(discriminators, propName)
-			}
-		}
-		sort.Strings(discriminators)
-
-		if hasInvalidConst || len(discriminators) != 1 {
-			branchIssues = append(branchIssues, DefinitionIssue{
-				Code: "invalidDiscriminator",
-				Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix),
-			})
+		if !rawJSONObject(branch["properties"], &props) || json.Unmarshal(branch["required"], &required) != nil {
+			invalidDiscriminator = true
 			continue
 		}
+		requiredSet := make(map[string]bool, len(required))
+		for _, name := range required {
+			requiredSet[name] = true
+		}
+		var candidates []string
+		values := make(map[string]string)
+		branchConstNames[i] = make(map[string]bool)
+		for name, propRaw := range props {
+			var prop map[string]json.RawMessage
+			if !rawJSONObject(propRaw, &prop) || !requiredSet[name] {
+				continue
+			}
+			if constRaw, ok := prop["const"]; ok {
+				branchConstNames[i][name] = true
+				var value string
+				if json.Unmarshal(constRaw, &value) == nil {
+					candidates = append(candidates, name)
+					values[name] = value
+				}
+			}
+		}
+		sort.Strings(candidates)
+		if len(candidates) != 1 {
+			invalidDiscriminator = true
+			continue
+		}
+		name, value := candidates[0], values[candidates[0]]
+		if commonDiscriminator == "" {
+			commonDiscriminator = name
+		} else if name != commonDiscriminator {
+			invalidDiscriminator = true
+		}
+		if seenValues[value] {
+			invalidDiscriminator = true
+		}
+		seenValues[value] = true
+	}
 
-		if i == 0 {
-			commonDiscriminator = discriminators[0]
-		} else if discriminators[0] != commonDiscriminator {
-			branchIssues = append(branchIssues, DefinitionIssue{
-				Code: "invalidDiscriminator",
-				Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix),
-			})
+	var issues []DefinitionIssue
+	if requireTagged && (invalidDiscriminator || commonDiscriminator == "") {
+		issues = append(issues, DefinitionIssue{Code: "invalidDiscriminator", Path: oneOfPath})
+	}
+	for i, branchRaw := range branches {
+		ctx := schemaValidationContext{}
+		if branchObjects[i] != nil {
+			ctx.untypedConstNames = branchConstNames[i]
+		}
+		issues = append(issues, validateSchemaObject(fmt.Sprintf("%s/oneOf/%d", prefix, i), branchRaw, rootDefs, ctx)...)
+	}
+	return issues
+}
+
+func rawJSONObject(raw json.RawMessage, out *map[string]json.RawMessage) bool {
+	if len(raw) == 0 || json.Unmarshal(raw, out) != nil || *out == nil {
+		return false
+	}
+	return true
+}
+
+func sortedRawKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func escapeProfilePointer(token string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(token, "~", "~0"), "/", "~1")
+}
+
+// localDefinitionReference resolves the one RFC 6901 token after #/$defs/.
+// An unescaped slash would address below a definition and is outside Profile v1.
+func localDefinitionReference(ref string) (string, bool) {
+	const prefix = "#/$defs/"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", false
+	}
+	token := strings.TrimPrefix(ref, prefix)
+	if token == "" || strings.Contains(token, "/") {
+		return "", false
+	}
+	var decoded strings.Builder
+	for i := 0; i < len(token); i++ {
+		if token[i] != '~' {
+			decoded.WriteByte(token[i])
+			continue
+		}
+		if i+1 >= len(token) {
+			return "", false
+		}
+		i++
+		switch token[i] {
+		case '0':
+			decoded.WriteByte('~')
+		case '1':
+			decoded.WriteByte('/')
+		default:
+			return "", false
 		}
 	}
+	return decoded.String(), true
+}
 
-	if len(branchIssues) > 0 {
-		return branchIssues
+func isNonNegativeProfileCount(raw json.RawMessage) (valid, safe bool) {
+	value, err := decodeJSONNumber(raw)
+	n, ok := value.(json.Number)
+	if err != nil || !ok {
+		return false, false
 	}
-	if commonDiscriminator == "" && len(oneOf) > 0 {
-		return []DefinitionIssue{{Code: "invalidDiscriminator", Path: fmt.Sprintf("/valueSchema%s/oneOf", prefix)}}
+	rat, ok := new(big.Rat).SetString(n.String())
+	if !ok || !rat.IsInt() || rat.Sign() < 0 {
+		return false, false
 	}
-	return nil
+	return true, rat.Cmp(big.NewRat(maxProfileSafeInteger, 1)) <= 0
+}
+
+func isProfileSafeNumber(raw json.RawMessage) bool {
+	value, err := decodeJSONNumber(raw)
+	n, ok := value.(json.Number)
+	if err != nil || !ok {
+		return false
+	}
+	rat, ok := new(big.Rat).SetString(n.String())
+	if !ok {
+		return false
+	}
+	limit := big.NewRat(maxProfileSafeInteger, 1)
+	return rat.Cmp(limit) <= 0 && rat.Cmp(new(big.Rat).Neg(limit)) >= 0
+}
+
+func isFiniteJSONNumber(raw json.RawMessage) bool {
+	value, err := decodeJSONNumber(raw)
+	n, ok := value.(json.Number)
+	if err != nil || !ok {
+		return false
+	}
+	f, err := n.Float64()
+	return err == nil && !math.IsInf(f, 0) && !math.IsNaN(f)
 }
 
 func buildRefGraph(defs map[string]json.RawMessage) map[string][]string {
@@ -375,8 +684,10 @@ func extractRefTargets(raw json.RawMessage) []string {
 
 	if refRaw, ok := obj["$ref"]; ok {
 		var ref string
-		if json.Unmarshal(refRaw, &ref) == nil && strings.HasPrefix(ref, "#/$defs/") {
-			targets = append(targets, strings.TrimPrefix(ref, "#/$defs/"))
+		if json.Unmarshal(refRaw, &ref) == nil {
+			if target, ok := localDefinitionReference(ref); ok {
+				targets = append(targets, target)
+			}
 		}
 	}
 
@@ -518,16 +829,11 @@ func resolveLocalSchemaType(raw json.RawMessage, defs map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &schema); err != nil || schema.Type != "" {
 			return schema.Type
 		}
-		if !strings.HasPrefix(schema.Ref, "#/$defs/") {
-			return ""
-		}
-
-		name := strings.TrimPrefix(schema.Ref, "#/$defs/")
-		if name == "" || seen[name] {
+		name, ok := localDefinitionReference(schema.Ref)
+		if !ok || seen[name] {
 			return ""
 		}
 		seen[name] = true
-		var ok bool
 		raw, ok = defs[name]
 		if !ok {
 			return ""
@@ -554,41 +860,35 @@ func dedupeDefinitionIssues(issues []DefinitionIssue) []DefinitionIssue {
 }
 
 func checkIsEmptyCompatibility(fieldName, isEmpty, schemaType string) *DefinitionIssue {
+	compatible := true
 	switch isEmpty {
 	case "string":
-		if schemaType != "string" {
-			return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", fieldName)}
-		}
+		compatible = schemaType == "string"
 	case "number":
-		if schemaType != "number" && schemaType != "integer" {
-			return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", fieldName)}
-		}
+		compatible = schemaType == "number" || schemaType == "integer"
 	case "boolean":
-		if schemaType != "boolean" {
-			return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", fieldName)}
-		}
+		compatible = schemaType == "boolean"
 	case "array":
-		if schemaType != "array" {
-			return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", fieldName)}
-		}
+		compatible = schemaType == "array"
 	case "object":
-		if schemaType != "object" {
-			return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", fieldName)}
-		}
+		compatible = schemaType == "object"
 	case "present":
 		// "present" is the portable no-emptiness strategy (spec rule 5 only
 		// constrains non-present strategies), so it is compatible with any type.
+	}
+	if !compatible {
+		return &DefinitionIssue{Code: "incompatibleIsEmpty", Path: fmt.Sprintf("/umpire/fields/%s", escapeProfilePointer(fieldName))}
 	}
 	return nil
 }
 
 func checkDefaultCompatibility(fieldName string, defaultRaw, propRaw json.RawMessage, defs map[string]json.RawMessage) *DefinitionIssue {
 	invalid := func() *DefinitionIssue {
-		return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", fieldName)}
+		return &DefinitionIssue{Code: "invalidDefault", Path: fmt.Sprintf("/umpire/fields/%s/default", escapeProfilePointer(fieldName))}
 	}
 
 	value, err := decodeJSONNumber(defaultRaw)
-	if err != nil {
+	if err != nil || value == nil {
 		return invalid()
 	}
 	// Base Umpire v1 permits only primitive defaults. Keep that contract explicit
@@ -630,11 +930,11 @@ func resolveLocalSchemaChain(raw json.RawMessage, defs map[string]json.RawMessag
 			return schemas, true
 		}
 		var ref string
-		if json.Unmarshal(refRaw, &ref) != nil || !strings.HasPrefix(ref, "#/$defs/") {
+		if json.Unmarshal(refRaw, &ref) != nil {
 			return nil, false
 		}
-		target := strings.TrimPrefix(ref, "#/$defs/")
-		if target == "" || seen[target] {
+		target, ok := localDefinitionReference(ref)
+		if !ok || seen[target] {
 			return nil, false
 		}
 		seen[target] = true
@@ -746,8 +1046,7 @@ func defaultMatchesType(value any, schemaType string) bool {
 		if !ok || !v.IsInt() {
 			return false
 		}
-		const maxSafe = int64(9007199254740991)
-		limit := big.NewRat(maxSafe, 1)
+		limit := big.NewRat(maxProfileSafeInteger, 1)
 		return v.Cmp(limit) <= 0 && v.Cmp(new(big.Rat).Neg(limit)) >= 0
 	case "object", "array":
 		// Object and array defaults are forbidden by the base Umpire v1 contract.

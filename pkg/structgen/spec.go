@@ -38,6 +38,7 @@ type TypeDef struct {
 	JSONName      string        // original JSON property name for inline types; "" for $defs/root
 	Fields        []FieldDef    // object / union: declared fields (union includes all branches)
 	Values        []EnumValue   // enum: allowed wire values in declared order
+	Scalar        Scalar        // enum: primitive underlying type
 	Discriminator string        // union: the shared discriminator property (e.g. "kind")
 	Branches      []UnionBranch // union: per-discriminator branch requirements
 	Elem          *FieldType    // array-alias: the element type
@@ -45,8 +46,8 @@ type TypeDef struct {
 
 // EnumValue is one allowed value of an enum type.
 type EnumValue struct {
-	Name string // Go constant name (PascalCase) e.g. "WorkflowPipeline"
-	Wire string // original wire value, e.g. "pipeline"
+	Name string // Go constant suffix, e.g. "Pipeline" or "Value1"
+	Wire any    // original primitive wire value
 }
 
 // FieldDef is one field of an object/union type, or of the root.
@@ -57,14 +58,16 @@ type FieldDef struct {
 	Required bool      // whether the property appears in the object's required array
 	Type     FieldType // structural type
 	// Constraints used by validation (chunk 5).
-	MinLength *int
-	MaxLength *int
-	Minimum   *float64
-	Maximum   *float64
-	MinItems  *int
-	MaxItems  *int
-	Const     any // const value when HasConst
-	HasConst  bool
+	MinLength        *int
+	MaxLength        *int
+	Minimum          *float64
+	Maximum          *float64
+	ExclusiveMinimum *float64
+	ExclusiveMaximum *float64
+	MinItems         *int
+	MaxItems         *int
+	Const            any // const value when HasConst
+	HasConst         bool
 }
 
 // FieldType is the structural type of a field: either a primitive scalar, an
