@@ -36,6 +36,10 @@ func emitStructural(b *strings.Builder, spec *Spec, opts EmitOptions) {
 	// Raw walker for the root object, then every named object/union type.
 	g.emitRawObject(b, spec.RootName, spec.Root)
 	for _, td := range spec.Types {
+		if td.AliasRef != "" {
+			g.emitRawAlias(b, td)
+			continue
+		}
 		switch td.Kind {
 		case KindObject:
 			g.emitRawObject(b, td.Name, td.Fields)
@@ -299,6 +303,12 @@ func (g rawGen) emitRawArrayElemBody(b *strings.Builder, elem *FieldType) {
 	b.WriteString("\t\t\t\t{\n\t\t\t\t\tr := el\n\t\t\t\t\tfpath := epath\n\t\t\t\t\tfspath := espath\n")
 	g.emitRawFieldBody(b, FieldDef{Type: *elem, Constraints: elem.Constraints})
 	b.WriteString("\t\t\t\t}\n")
+}
+
+func (g rawGen) emitRawAlias(b *strings.Builder, td TypeDef) {
+	fmt.Fprintf(b, "func %s(raw json.RawMessage, path, schemaPath string, issues *[]%sStructuralIssue) {\n", g.fn(td.Name), g.S)
+	fmt.Fprintf(b, "\t%s(raw, path, schemaPath, issues)\n", g.fn(td.AliasRef))
+	b.WriteString("}\n\n")
 }
 
 func (g rawGen) emitRawDefinition(b *strings.Builder, td TypeDef) {

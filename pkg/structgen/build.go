@@ -38,6 +38,15 @@ func Build(valueSchema json.RawMessage, rootName string) (*Spec, error) {
 			}
 			for _, name := range sortedKeys(defs) {
 				typed := b.defNames[name]
+				if targetWire, ok := refOnlyDefinition(defs[name]); ok {
+					target := b.defNames[targetWire]
+					if target == "" {
+						return nil, fmt.Errorf("$defs/%s: unsupported $ref %q", name, "#/$defs/"+targetWire)
+					}
+					idx := b.byName[typed]
+					b.types[idx] = TypeDef{Name: typed, AliasRef: target}
+					continue
+				}
 				ft, err := b.resolve(defs[name], typed, "", true)
 				if err != nil {
 					return nil, fmt.Errorf("$defs/%s: %w", name, err)
@@ -46,6 +55,9 @@ func Build(valueSchema json.RawMessage, rootName string) (*Spec, error) {
 					idx := b.byName[typed]
 					b.types[idx] = TypeDef{Name: typed, Kind: ft.Kind, Scalar: ft.Scalar, Elem: ft.Elem, Constraints: ft.Constraints}
 				}
+			}
+			if err := b.finalizeAliases(); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -96,6 +108,51 @@ func (b *builder) at(name string) *TypeDef {
 	return &b.types[idx]
 }
 
+// finalizeAliases copies each ref-only definition's target shape while retaining
+// a Go alias edge for emission. Profile validation rejects cycles, but Build also
+// detects them so direct structgen callers never observe incomplete placeholders.
+func (b *builder) finalizeAliases() error {
+	state := make(map[string]uint8)
+	var resolve func(string) error
+	resolve = func(name string) error {
+		td := b.at(name)
+		if td == nil || td.AliasRef == "" {
+			return nil
+		}
+		switch state[name] {
+		case 1:
+			return fmt.Errorf("$defs alias cycle at %s", name)
+		case 2:
+			return nil
+		}
+		state[name] = 1
+		target := b.at(td.AliasRef)
+		if target == nil {
+			return fmt.Errorf("$defs alias %s has missing target %s", name, td.AliasRef)
+		}
+		if err := resolve(target.Name); err != nil {
+			return err
+		}
+		target = b.at(td.AliasRef)
+		if target.Kind == "" {
+			return fmt.Errorf("$defs alias %s has unresolved target %s", name, td.AliasRef)
+		}
+		aliasRef := td.AliasRef
+		copy := *target
+		copy.Name = name
+		copy.AliasRef = aliasRef
+		*b.at(name) = copy
+		state[name] = 2
+		return nil
+	}
+	for _, td := range b.types {
+		if err := resolve(td.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // finalize corrects field reference kinds now that every named type is fully
 // built. Forward $def references were resolved against empty placeholders and
 // forced to KindObject; this restores the true object/enum/union kind so
@@ -111,6 +168,7 @@ func (b *builder) finalize() {
 				ft.Kind = actualKind(td.Kind)
 				ft.Scalar = td.Scalar
 				ft.Elem = td.Elem
+				ft.Constraints = td.Constraints
 			}
 		}
 		if ft.Kind == KindArray {
@@ -516,6 +574,19 @@ func attachConstraints(fd *FieldDef, node map[string]json.RawMessage) {
 }
 
 // ---- helpers ----
+
+func refOnlyDefinition(raw json.RawMessage) (string, bool) {
+	var node map[string]json.RawMessage
+	if json.Unmarshal(raw, &node) != nil || len(node) != 1 {
+		return "", false
+	}
+	var ref string
+	if json.Unmarshal(node["$ref"], &ref) != nil {
+		return "", false
+	}
+	wire := refWireName(ref)
+	return wire, wire != ""
+}
 
 func refWireName(ref string) string {
 	const prefix = "#/$defs/"

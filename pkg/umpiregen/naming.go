@@ -61,6 +61,11 @@ func validateGeneratedSymbols(umpireJSON, valueSchemaJSON []byte, cfg Config) []
 		{schemaName + "StructuralError", "/generation/schemaName"},
 		{"Validate" + schemaName + "JSON", "/generation/schemaName"},
 		{"Decode" + schemaName, "/generation/schemaName"},
+		{schemaName + "StructuralIssueAt", "/generation/schemaName"},
+		{schemaName + "StructuralKind", "/generation/schemaName"},
+		{schemaName + "StructuralIntParts", "/generation/schemaName"},
+		{schemaName + "StructuralSort", "/generation/schemaName"},
+		{"svalidate" + schemaName, "/generation/schemaName"},
 		{"FieldStatus", "/generation/helpers"},
 		{"Issue", "/generation/helpers"},
 		{"RuleMetaEntry", "/generation/helpers"},
@@ -70,6 +75,19 @@ func validateGeneratedSymbols(umpireJSON, valueSchemaJSON []byte, cfg Config) []
 		{"contains", "/generation/helpers"},
 		{"depSatisfied", "/generation/helpers"},
 		{"escapePtr", "/generation/helpers"},
+		{"emailRegex", "/generation/helpers"},
+		{"urlRegex", "/generation/helpers"},
+		{"integerRegex", "/generation/helpers"},
+		{"numberRegex", "/generation/helpers"},
+		{"isValidEmail", "/generation/helpers"},
+		{"isValidRegexPattern", "/generation/helpers"},
+		{"isValidRegexMatch", "/generation/helpers"},
+		{"isValidURL", "/generation/helpers"},
+		{"isValidInteger", "/generation/helpers"},
+		{"isValidNumber", "/generation/helpers"},
+		{"parseFloat", "/generation/helpers"},
+		{"isInRange", "/generation/helpers"},
+		{"ruleMeta", "/generation/helpers"},
 	} {
 		add(item.name, item.path)
 	}
@@ -78,15 +96,20 @@ func validateGeneratedSymbols(umpireJSON, valueSchemaJSON []byte, cfg Config) []
 	if json.Unmarshal(valueSchemaJSON, &valueSchema) == nil {
 		var walk func(map[string]json.RawMessage, string, string, bool)
 		walk = func(node map[string]json.RawMessage, hint, path string, declared bool) {
+			if declared {
+				add("svalidate"+hint, path)
+			}
 			var schemaType string
 			_ = json.Unmarshal(node["type"], &schemaType)
 			if _, union := node["oneOf"]; union {
 				if !declared {
 					add(hint, path)
+					add("svalidate"+hint, path)
 				}
 				interfaceName := hint + "Value"
 				add(interfaceName, path)
 				add(hint+"Kind", path)
+				add("svalidate"+hint+"Kind", path)
 				var branches []json.RawMessage
 				_ = json.Unmarshal(node["oneOf"], &branches)
 				if !goNameableTaggedUnion(branches) {
@@ -111,6 +134,7 @@ func validateGeneratedSymbols(umpireJSON, valueSchemaJSON []byte, cfg Config) []
 				if !declared {
 					name += "Value"
 					add(name, path)
+					add("svalidate"+name, path)
 				}
 				var values []json.RawMessage
 				_ = json.Unmarshal(node["enum"], &values)
@@ -123,6 +147,7 @@ func validateGeneratedSymbols(umpireJSON, valueSchemaJSON []byte, cfg Config) []
 			case "object":
 				if !declared {
 					add(hint, path)
+					add("svalidate"+hint, path)
 				}
 				walkProperties(node, hint, path, walk)
 			case "array":

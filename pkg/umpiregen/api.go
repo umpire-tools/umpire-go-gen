@@ -22,18 +22,16 @@ func Generate(schemaJSON []byte, cfg Config) (string, error) {
 
 // GenerateProfile reads a canonical profile document (valueSchema + umpire inline)
 // and emits a Go source file from the embedded umpire availability document.
-// Definition issues (excluded keywords, field mismatches, etc.) are returned
-// alongside generated source, or alongside an error when the profile cannot
-// produce compilable merged output.
+// Definition issues reject compilation: source is empty, issues are preserved,
+// and err is a *DefinitionError. Generation proceeds only for a clean profile.
 func GenerateProfile(profileJSON []byte, cfg Config) (source string, issues []DefinitionIssue, err error) {
 	result, err := ParseProfile(profileJSON)
 	if err != nil {
 		return "", nil, fmt.Errorf("parse profile: %w", err)
 	}
-	nameIssues := generationConfigIssues(result.Profile, cfg)
-	result.Issues = dedupeDefinitionIssues(append(result.Issues, nameIssues...))
-	if len(nameIssues) != 0 {
-		return "", result.Issues, nil
+	result.Issues = dedupeDefinitionIssues(append(result.Issues, generationConfigIssues(result.Profile, cfg)...))
+	if err := result.IssuesError(); err != nil {
+		return "", result.Issues, err
 	}
 
 	source, err = generateStructural(result.Profile.UmpireJSON, result.Profile.ValueSchemaJSON, cfg)
@@ -46,17 +44,16 @@ func GenerateProfile(profileJSON []byte, cfg Config) (source string, issues []De
 
 // GenerateComposed reads separately supplied umpire and value-schema documents
 // and emits a Go source file from the umpire availability document.
-// Definition issues are validated across both documents and may accompany an
-// error when the documents cannot produce compilable merged output.
+// Definition issues reject compilation: source is empty, issues are preserved,
+// and err is a *DefinitionError.
 func GenerateComposed(umpireJSON, valueSchemaJSON []byte, cfg Config) (source string, issues []DefinitionIssue, err error) {
 	result, err := ParseComposed(umpireJSON, valueSchemaJSON)
 	if err != nil {
 		return "", nil, fmt.Errorf("parse composed profile: %w", err)
 	}
-	nameIssues := generationConfigIssues(result.Profile, cfg)
-	result.Issues = dedupeDefinitionIssues(append(result.Issues, nameIssues...))
-	if len(nameIssues) != 0 {
-		return "", result.Issues, nil
+	result.Issues = dedupeDefinitionIssues(append(result.Issues, generationConfigIssues(result.Profile, cfg)...))
+	if err := result.IssuesError(); err != nil {
+		return "", result.Issues, err
 	}
 
 	source, err = generateStructural(result.Profile.UmpireJSON, result.Profile.ValueSchemaJSON, cfg)

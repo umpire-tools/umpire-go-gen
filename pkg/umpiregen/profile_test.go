@@ -2,6 +2,7 @@ package umpiregen
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -596,9 +597,10 @@ func TestParseProfile_ClosedVocabularyExcludedKeywords(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			schema := fmt.Sprintf(`{"type":"string",%q:%s}`, test.keyword, test.value)
-			_, issues, err := GenerateProfile(profileSchemaFixtureJSON(schema, ""), Config{PkgName: "closedvocabulary", SchemaName: "ClosedVocabulary"})
-			if err != nil {
-				t.Fatalf("GenerateProfile() error: %v", err)
+			source, issues, err := GenerateProfile(profileSchemaFixtureJSON(schema, ""), Config{PkgName: "closedvocabulary", SchemaName: "ClosedVocabulary"})
+			var definitionErr *DefinitionError
+			if source != "" || !errors.As(err, &definitionErr) {
+				t.Fatalf("GenerateProfile() = source %q, err %T %v; want closed DefinitionError", source, err, err)
 			}
 			assertHasIssue(t, issues, "unsupportedKeyword", "/valueSchema/properties/value/"+escapeProfilePointer(test.keyword))
 		})
@@ -1319,8 +1321,9 @@ func TestGenerateProfileRejectsGeneratedSymbolCollisions(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source, issues, err := GenerateProfile(profile, test.cfg)
-			if err != nil || source != "" {
-				t.Fatalf("GenerateProfile() = source %q, err %v", source, err)
+			var definitionErr *DefinitionError
+			if !errors.As(err, &definitionErr) || source != "" {
+				t.Fatalf("GenerateProfile() = source %q, err %T %v; want closed DefinitionError", source, err, err)
 			}
 			code := "nameCollision"
 			if test.name == "invalid configured keyword" {
@@ -1342,9 +1345,10 @@ func TestGenerateProfileRejectsNestedTypeAndGeneratedConstantCollisions(t *testi
 		},
 		"umpire":{"version":1,"fields":{"profile":{"isEmpty":"object"}},"rules":[]}
 	}`, ProfileSchemaURI))
-	_, issues, err := GenerateProfile(profile, Config{PkgName: "x", SchemaName: "Doc"})
-	if err != nil {
-		t.Fatal(err)
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "x", SchemaName: "Doc"})
+	var definitionErr *DefinitionError
+	if source != "" || !errors.As(err, &definitionErr) {
+		t.Fatalf("GenerateProfile() = source %q, err %T %v; want closed DefinitionError", source, err, err)
 	}
 	assertHasIssue(t, issues, "nameCollision", "/valueSchema/$defs/profile")
 
@@ -1363,6 +1367,36 @@ func TestGenerateProfileRejectsNestedTypeAndGeneratedConstantCollisions(t *testi
 		if !found {
 			t.Fatalf("generated constant collision not rejected: %+v", result.Issues)
 		}
+	}
+}
+
+func TestGenerateProfileRejectsStructuralHelperCollision(t *testing.T) {
+	profile := []byte(fmt.Sprintf(`{
+		"$schema":%q,"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"value":{"$ref":"#/$defs/structuralKind"}},
+			"additionalProperties":false,
+			"$defs":{"structuralKind":{"type":"string"}}
+		},
+		"umpire":{"version":1,"fields":{"value":{}},"rules":[]}
+	}`, ProfileSchemaURI))
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "x", SchemaName: "Doc"})
+	var definitionErr *DefinitionError
+	if source != "" || !errors.As(err, &definitionErr) {
+		t.Fatalf("GenerateProfile() = source %q, err %T %v; want closed DefinitionError", source, err, err)
+	}
+	assertHasIssue(t, issues, "nameCollision", "/valueSchema/$defs/structuralKind")
+}
+
+func TestUnionSymbolValidationIgnoresBranchLocalStringConsts(t *testing.T) {
+	schema := `{"oneOf":[
+		{"type":"object","properties":{"kind":{"const":"a"},"label":{"type":"string","const":"shared-local"}},"required":["kind"],"additionalProperties":false},
+		{"type":"object","properties":{"kind":{"const":"b"},"label":{"type":"string","const":"shared-local"}},"required":["kind"],"additionalProperties":false}
+	]}`
+	result := parseProfileSchemaFixture(t, schema, "")
+	if len(result.Issues) != 0 {
+		t.Fatalf("branch-local consts created definition issues: %+v", result.Issues)
 	}
 }
 

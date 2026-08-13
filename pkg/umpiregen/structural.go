@@ -17,15 +17,14 @@ import (
 // Check and Challenge use the richer root field types.
 // Inputs without a value schema retain the existing availability-only output.
 func generateStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, error) {
-	if src, ok, err := tryStructural(umpireJSON, valueSchemaJSON, cfg); err != nil {
+	src, ok, err := tryStructural(umpireJSON, valueSchemaJSON, cfg)
+	if err != nil {
 		return "", err
-	} else if ok {
-		return src, nil
 	}
-	// The valueSchema could not be mapped to structural types (e.g. it contains
-	// an excluded keyword like allOf). Fall back to availability-only output; the
-	// profile definition issues are surfaced separately by the caller.
-	return generateFromBytes(umpireJSON, cfg)
+	if !ok {
+		return "", fmt.Errorf("value schema is required for structural profile generation")
+	}
+	return src, nil
 }
 
 // tryStructural attempts to emit structural + availability merged output. The
@@ -37,7 +36,7 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 
 	spec, err := structgen.Build(valueSchemaJSON, cfg.SchemaName)
 	if err != nil {
-		return "", false, nil
+		return "", false, fmt.Errorf("build structural schema: %w", err)
 	}
 	fieldsName := cfg.FieldsName
 	if fieldsName == "" {
@@ -49,7 +48,7 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 		RootTypeName: fieldsName,
 	})
 	if err != nil {
-		return "", false, nil
+		return "", false, fmt.Errorf("emit structural schema: %w", err)
 	}
 
 	// Surface structural root types in the availability Fields struct while

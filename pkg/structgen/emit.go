@@ -2,6 +2,7 @@ package structgen
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/umpire-tools/umpire-go-gen/pkg/codegen"
@@ -46,6 +47,14 @@ func Emit(spec *Spec, opts EmitOptions) (*Emission, error) {
 
 	// Definition aliases, enums, objects, then branch-specific unions.
 	for _, td := range spec.Types {
+		if td.AliasRef != "" {
+			fmt.Fprintf(&b, "type %s = %s\n\n", td.Name, td.AliasRef)
+		}
+	}
+	for _, td := range spec.Types {
+		if td.AliasRef != "" {
+			continue
+		}
 		switch td.Kind {
 		case KindScalar:
 			fmt.Fprintf(&b, "type %s %s\n\n", td.Name, scalarGoType(td.Scalar))
@@ -56,13 +65,13 @@ func Emit(spec *Spec, opts EmitOptions) (*Emission, error) {
 		}
 	}
 	for _, td := range spec.Types {
-		if td.Kind == KindObject {
+		if td.AliasRef == "" && td.Kind == KindObject {
 			emitStruct(&b, td.Name, td.Fields)
 			emitStrictDecode(&b, td, schemaPrefix)
 		}
 	}
 	for _, td := range spec.Types {
-		if td.Kind == KindUnion {
+		if td.AliasRef == "" && td.Kind == KindUnion {
 			emitUnionDecoder(&b, spec, td, schemaPrefix)
 		}
 	}
@@ -198,7 +207,7 @@ func goJSONTag(fd FieldDef) string {
 func emitStruct(b *strings.Builder, name string, fields []FieldDef) {
 	fmt.Fprintf(b, "type %s struct {\n", name)
 	for _, fd := range fields {
-		fmt.Fprintf(b, "\t%s %s `json:%q`\n", fd.GoName, fieldGoType(fd), goJSONTag(fd))
+		fmt.Fprintf(b, "\t%s %s %q\n", fd.GoName, fieldGoType(fd), "json:"+strconv.Quote(goJSONTag(fd)))
 	}
 	b.WriteString("}\n\n")
 }

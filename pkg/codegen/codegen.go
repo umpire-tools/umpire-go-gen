@@ -3,6 +3,7 @@ package codegen
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"text/template"
 
 	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
@@ -251,6 +252,12 @@ var templateFuncMap = template.FuncMap{
 	"activeField": func(groupName string) string {
 		return fmt.Sprintf("	%s %s `json:\"-\"`", "Active"+GoFieldName(groupName), groupName)
 	},
+	"structTag": func(jsonName string, omitEmpty bool) string {
+		if omitEmpty {
+			jsonName += ",omitempty"
+		}
+		return strconv.Quote("json:" + strconv.Quote(jsonName))
+	},
 }
 
 // templateSrc is the Go source template.
@@ -269,14 +276,14 @@ import (
 // {{ .FieldsName }} holds the fields for {{ .SchemaName }} availability checks.
 type {{ .FieldsName }} struct {
 {{- range .Fields }}
-	{{ goFieldNameFT . }} {{ goType . }} ` + "`json:\"{{ .JSONTag }},omitempty\"`" + `
+	{{ goFieldNameFT . }} {{ goType . }} {{ structTag .JSONTag true }}
 {{- end }}
 }
 
 // {{ .ConditionsName }} holds the conditions for {{ .SchemaName }} availability checks.
 type {{ .ConditionsName }} struct {
 {{- range .Conditions }}
-	{{ goFieldName .Name }} {{ condGoType . }} ` + "`json:\"{{ .JSONTag }}\"`" + `
+	{{ goFieldName .Name }} {{ condGoType . }} {{ structTag .JSONTag false }}
 {{- end }}
 }
 

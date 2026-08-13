@@ -43,6 +43,7 @@ type TypeDef struct {
 	Branches      []UnionBranch // branch-specific union definitions
 	Elem          *FieldType    // array definition element type
 	Constraints   Constraints   // scalar/array definition constraints
+	AliasRef      string        // non-empty for a $defs entry containing only $ref
 }
 
 // EnumValue is one allowed value of an enum type.
@@ -101,6 +102,20 @@ func (s *Spec) Lookup(name string) *TypeDef {
 		if s.Types[i].Name == name {
 			return &s.Types[i]
 		}
+	}
+	return nil
+}
+
+// Resolve follows ref-only definition aliases to the canonical named type.
+func (s *Spec) Resolve(name string) *TypeDef {
+	seen := make(map[string]bool)
+	for name != "" && !seen[name] {
+		seen[name] = true
+		td := s.Lookup(name)
+		if td == nil || td.AliasRef == "" {
+			return td
+		}
+		name = td.AliasRef
 	}
 	return nil
 }

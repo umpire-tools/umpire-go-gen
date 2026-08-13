@@ -41,7 +41,7 @@ func TestGenerateComposedStructural_RawAPI(t *testing.T) {
 		"func ValidateDocJSON(data []byte)",
 		"func DecodeDoc(data []byte)",
 		"XMLParser",
-		"`json:\"XMLParser\"`",
+		`json:\"XMLParser\"`,
 		"Count *int64",
 	} {
 		if !strings.Contains(source, want) {

@@ -36,6 +36,23 @@ func (d DefinitionIssue) Error() string {
 	return fmt.Sprintf("%s at %s", d.Code, d.Path)
 }
 
+// DefinitionError rejects profile compilation while retaining every normalized
+// definition issue returned separately by GenerateProfile or GenerateComposed.
+type DefinitionError struct {
+	Issues []DefinitionIssue
+}
+
+func (e *DefinitionError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	msgs := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		msgs = append(msgs, issue.Error())
+	}
+	return fmt.Sprintf("profile definition issues: %s", strings.Join(msgs, "; "))
+}
+
 // ProfileResult holds the result of profile parsing.
 type ProfileResult struct {
 	Profile *Profile
@@ -638,7 +655,11 @@ func validateGoSchemaNames(root map[string]json.RawMessage) []DefinitionIssue {
 		}
 		if oneOfRaw, ok := node["oneOf"]; ok {
 			var branches []json.RawMessage
-			if json.Unmarshal(oneOfRaw, &branches) == nil && goNameableTaggedUnion(branches) {
+			discriminator, nameable := "", false
+			if json.Unmarshal(oneOfRaw, &branches) == nil {
+				discriminator, nameable = taggedUnionDiscriminator(branches)
+			}
+			if nameable {
 				seenVariants := make(map[string]bool)
 				variantCollision := false
 				for i, raw := range branches {
@@ -651,29 +672,24 @@ func validateGoSchemaNames(root map[string]json.RawMessage) []DefinitionIssue {
 					if !rawJSONObject(branch["properties"], &props) {
 						continue
 					}
-					for propName, propRaw := range props {
-						var prop map[string]json.RawMessage
-						if !rawJSONObject(propRaw, &prop) {
-							continue
-						}
-						constRaw, ok := prop["const"]
-						if !ok {
-							continue
-						}
-						var wire string
-						if json.Unmarshal(constRaw, &wire) != nil {
-							continue
-						}
-						name := codegen.GoFieldName(wire)
-						constPath := fmt.Sprintf("%s/oneOf/%d/properties/%s/const", path, i, escapeProfilePointer(propName))
-						if !validGeneratedIdentifier(name) {
-							issues = append(issues, DefinitionIssue{Code: "invalidName", Path: constPath})
-						}
-						if seenVariants[name] {
-							variantCollision = true
-						}
-						seenVariants[name] = true
+					propRaw := props[discriminator]
+					var prop map[string]json.RawMessage
+					if !rawJSONObject(propRaw, &prop) {
+						continue
 					}
+					var wire string
+					if json.Unmarshal(prop["const"], &wire) != nil {
+						continue
+					}
+					name := codegen.GoFieldName(wire)
+					constPath := fmt.Sprintf("%s/oneOf/%d/properties/%s/const", path, i, escapeProfilePointer(discriminator))
+					if !validGeneratedIdentifier(name) {
+						issues = append(issues, DefinitionIssue{Code: "invalidName", Path: constPath})
+					}
+					if seenVariants[name] {
+						variantCollision = true
+					}
+					seenVariants[name] = true
 				}
 				if variantCollision {
 					issues = append(issues, DefinitionIssue{Code: "nameCollision", Path: path + "/oneOf"})
@@ -699,8 +715,13 @@ func validateGoSchemaNames(root map[string]json.RawMessage) []DefinitionIssue {
 }
 
 func goNameableTaggedUnion(branches []json.RawMessage) bool {
+	_, ok := taggedUnionDiscriminator(branches)
+	return ok
+}
+
+func taggedUnionDiscriminator(branches []json.RawMessage) (string, bool) {
 	if len(branches) == 0 {
-		return false
+		return "", false
 	}
 	discriminator := ""
 	seenValues := make(map[string]bool)
@@ -709,7 +730,7 @@ func goNameableTaggedUnion(branches []json.RawMessage) bool {
 		var props map[string]json.RawMessage
 		var required []string
 		if !rawJSONObject(raw, &branch) || !rawJSONObject(branch["properties"], &props) || json.Unmarshal(branch["required"], &required) != nil {
-			return false
+			return "", false
 		}
 		requiredSet := make(map[string]bool, len(required))
 		for _, name := range required {
@@ -727,18 +748,18 @@ func goNameableTaggedUnion(branches []json.RawMessage) bool {
 			var candidate string
 			if json.Unmarshal(prop["const"], &candidate) == nil {
 				if name != "" {
-					return false
+					return "", false
 				}
 				name, value = propName, candidate
 			}
 		}
 		if name == "" || discriminator != "" && discriminator != name || seenValues[value] {
-			return false
+			return "", false
 		}
 		discriminator = name
 		seenValues[value] = true
 	}
-	return true
+	return discriminator, true
 }
 
 func validateGoNameCollection(values map[string]json.RawMessage, path string) []DefinitionIssue {
@@ -762,7 +783,7 @@ func validateGoNameCollection(values map[string]json.RawMessage, path string) []
 }
 
 func validGeneratedIdentifier(name string) bool {
-	return token.IsIdentifier(name) && name != "_" && !token.Lookup(strings.ToLower(name)).IsKeyword()
+	return token.IsIdentifier(name) && name != "_" && !token.Lookup(name).IsKeyword()
 }
 
 func rawJSONObject(raw json.RawMessage, out *map[string]json.RawMessage) bool {
@@ -1359,12 +1380,8 @@ func meetsUpperBound(value float64, raw json.RawMessage, inclusive bool) bool {
 }
 
 func (pr *ProfileResult) IssuesError() error {
-	if len(pr.Issues) == 0 {
+	if pr == nil || len(pr.Issues) == 0 {
 		return nil
 	}
-	var msgs []string
-	for _, iss := range pr.Issues {
-		msgs = append(msgs, iss.Error())
-	}
-	return fmt.Errorf("profile definition issues: %s", strings.Join(msgs, "; "))
+	return &DefinitionError{Issues: append([]DefinitionIssue(nil), pr.Issues...)}
 }

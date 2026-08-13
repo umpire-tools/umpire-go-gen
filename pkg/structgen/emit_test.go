@@ -470,3 +470,96 @@ func TestStrictRoot(t *testing.T) {
 `
 	runGenerated(t, vs, "Doc", "smoke", testSrc)
 }
+
+func TestEmitRefOnlyDefinitionsPreserveShapesAndEmptyIntegralArrays(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"code":{"$ref":"#/$defs/codeAlias"},
+			"counts":{"$ref":"#/$defs/countsAlias"},
+			"matrix":{"$ref":"#/$defs/matrixAlias"},
+			"meta":{"$ref":"#/$defs/metaAlias"},
+			"mode":{"$ref":"#/$defs/modeAlias"},
+			"choice":{"$ref":"#/$defs/choiceAlias"}
+		},
+		"additionalProperties":false,
+		"$defs":{
+			"code":{"type":"string","minLength":2},
+			"codeAlias":{"$ref":"#/$defs/code"},
+			"counts":{"type":"array","items":{"$ref":"#/$defs/positive"}},
+			"countsAlias":{"$ref":"#/$defs/counts"},
+			"matrix":{"type":"array","items":{"type":"array","items":{"$ref":"#/$defs/positive"}}},
+			"matrixAlias":{"$ref":"#/$defs/matrix"},
+			"meta":{"type":"object","properties":{"name":{"type":"string","minLength":2}},"required":["name"],"additionalProperties":false},
+			"metaAlias":{"$ref":"#/$defs/meta"},
+			"mode":{"type":"string","enum":["on","off"]},
+			"modeAlias":{"$ref":"#/$defs/mode"},
+			"choice":{"oneOf":[
+				{"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
+				{"type":"object","properties":{"kind":{"const":"count"},"count":{"type":"integer"}},"required":["kind","count"],"additionalProperties":false}
+			]},
+			"choiceAlias":{"$ref":"#/$defs/choice"},
+			"positive":{"type":"integer","minimum":1}
+		}
+	}`
+	testSrc := `
+func TestAliases(t *testing.T) {
+	input := []byte("{\"code\":\"ok\",\"counts\":[],\"matrix\":[[]],\"meta\":{\"name\":\"ok\"},\"mode\":\"on\",\"choice\":{\"kind\":\"text\",\"text\":\"x\"}}")
+	decoded, err := DecodeDoc(input)
+	if err != nil { t.Fatal(err) }
+	if decoded.Counts == nil || *decoded.Counts == nil || len(*decoded.Counts) != 0 { t.Fatalf("empty integral array lost presence: %#v", decoded.Counts) }
+	if decoded.Matrix == nil || *decoded.Matrix == nil || len(*decoded.Matrix) != 1 || (*decoded.Matrix)[0] == nil { t.Fatalf("nested empty integral array lost presence: %#v", decoded.Matrix) }
+	if decoded.Meta == nil || decoded.Meta.Name != "ok" { t.Fatalf("object alias: %#v", decoded.Meta) }
+	if decoded.Mode == nil || *decoded.Mode != DocModeOn { t.Fatalf("enum alias: %#v", decoded.Mode) }
+	if decoded.Choice == nil { t.Fatal("union alias missing") }
+	if _, ok := decoded.Choice.Value.(*DocChoiceValueText); !ok { t.Fatalf("union alias branch: %T", decoded.Choice.Value) }
+
+	bad := DocPositive(0)
+	counts := DocCountsAlias{bad}
+	doc := Doc{Counts: &counts}
+	before, _ := json.Marshal(doc)
+	issues := doc.Validate()
+	after, _ := json.Marshal(doc)
+	if string(before) != string(after) { t.Fatal("typed Validate mutated receiver") }
+	if len(issues) != 1 || issues[0] != (Issue{Code:"minimum", Path:"/counts/0"}) { t.Fatalf("array ref constraints: %+v", issues) }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}
+
+func TestDecodeStructuralErrorExactIssuesAndInputImmutability(t *testing.T) {
+	vs := `{
+		"type":"object",
+		"properties":{
+			"requiredField":{"type":"string"},
+			"count":{"type":"integer"},
+			"matrix":{"type":"array","items":{"type":"array","items":{"type":"integer"}}},
+			"action":{"oneOf":[
+				{"type":"object","properties":{"kind":{"const":"run"}},"required":["kind"],"additionalProperties":false},
+				{"type":"object","properties":{"kind":{"const":"stop"}},"required":["kind"],"additionalProperties":false}
+			]}
+		},
+		"required":["requiredField"],
+		"additionalProperties":false
+	}`
+	testSrc := `
+func TestStructuralError(t *testing.T) {
+	_ = json.Valid
+	input := []byte("{\"action\":{\"kind\":\"other\"},\"count\":\"bad\",\"matrix\":[[\"bad\"]]}")
+	before := append([]byte(nil), input...)
+	_, err := DecodeDoc(input)
+	structural, ok := err.(*DocStructuralError)
+	if !ok { t.Fatalf("DecodeDoc error = %T %v", err, err) }
+	want := []DocStructuralIssue{
+		{Source:"json-schema", Code:"discriminator", Path:"/action/kind", SchemaPath:"/properties/action/properties/kind", Message:"discriminator"},
+		{Source:"json-schema", Code:"type", Path:"/count", SchemaPath:"/properties/count", Message:"type"},
+		{Source:"json-schema", Code:"type", Path:"/matrix/0/0", SchemaPath:"/properties/matrix/items/items", Message:"type"},
+		{Source:"json-schema", Code:"required", Path:"/requiredField", SchemaPath:"", Message:"required"},
+	}
+	if len(structural.Issues) != len(want) { t.Fatalf("issues = %+v, want %+v", structural.Issues, want) }
+	for i := range want { if structural.Issues[i] != want[i] { t.Fatalf("issue[%d] = %+v, want %+v", i, structural.Issues[i], want[i]) } }
+	if string(input) != string(before) { t.Fatal("DecodeDoc mutated raw input") }
+}
+`
+	runGenerated(t, vs, "Doc", "smoke", testSrc)
+}

@@ -164,6 +164,73 @@ func TestMergedRuntime(t *testing.T) {
 	runMerged(t, source, "smoke", testSrc)
 }
 
+func TestGenerateProfileStructural_SafelyQuotesArbitraryWireTags(t *testing.T) {
+	profile := []byte(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"wire` + "`" + `injected":{"type":"string"}},
+			"additionalProperties":false
+		},
+		"umpire":{
+			"version":1,
+			"fields":{"wire` + "`" + `injected":{"isEmpty":"string"}},
+			"conditions":{"gate` + "`" + `injected":{"type":"boolean"}},
+			"rules":[]
+		}
+	}`)
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "safetags", SchemaName: "Doc"})
+	if err != nil || len(issues) != 0 {
+		t.Fatalf("GenerateProfile() = issues %+v, err %v", issues, err)
+	}
+	testSrc := `
+func TestSafeTags(t *testing.T) {
+	_ = json.Valid
+	fields, err := DecodeDoc([]byte("{\"wire` + "`" + `injected\":\"ok\"}"))
+	if err != nil { t.Fatal(err) }
+	if fields.WireInjected == nil || *fields.WireInjected != "ok" { t.Fatalf("DecodeDoc did not preserve wire name: %+v", fields) }
+	_ = DocConditions{GateInjected: true}
+}
+`
+	runMerged(t, source, "safetags", testSrc)
+}
+
+func TestGenerateProfileStructural_ArrayDefinitionAvailabilityUsesLength(t *testing.T) {
+	profile := []byte(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"items":{"$ref":"#/$defs/itemsAlias"},"dependent":{"type":"string"}},
+			"additionalProperties":false,
+			"$defs":{"items":{"type":"array","items":{"type":"integer"}},"itemsAlias":{"$ref":"#/$defs/items"}}
+		},
+		"umpire":{
+			"version":1,
+			"fields":{"items":{"isEmpty":"array"},"dependent":{}},
+			"rules":[{"type":"requires","field":"dependent","dependency":"items"}]
+		}
+	}`)
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "arrayavailability", SchemaName: "Doc"})
+	if err != nil || len(issues) != 0 {
+		t.Fatalf("GenerateProfile() = issues %+v, err %v", issues, err)
+	}
+	testSrc := `
+func TestArrayAvailability(t *testing.T) {
+	_ = json.Valid
+	fields, err := DecodeDoc([]byte("{\"items\":[]}"))
+	if err != nil { t.Fatal(err) }
+	if fields.Items == nil || *fields.Items == nil { t.Fatal("DecodeDoc lost explicit empty array") }
+	availability := Check(fields, DocConditions{}, DocFields{})
+	if availability.Items.Satisfied || depSatisfied(fields, "Items") || availability.Dependent.Enabled {
+		t.Fatalf("empty pointer-to-array was satisfied: items=%+v dependent=%+v", availability.Items, availability.Dependent)
+	}
+}
+`
+	runMerged(t, source, "arrayavailability", testSrc)
+}
+
 func TestGenerateProfileStructural_NamedStringEnumUsesStringEmptiness(t *testing.T) {
 	profile := []byte(`{
 		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",

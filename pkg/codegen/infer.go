@@ -90,7 +90,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 	for _, f := range s.Fields {
 		ti := FieldTypeInfo{
 			Name:    f.Name,
-			JSONTag: camelToJSONTag(GoFieldName(f.Name)),
+			JSONTag: f.Name,
 		}
 
 		// Use explicit type hint if present
@@ -114,7 +114,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		ti := ConditionTypeInfo{
 			Name:    c.Name,
 			GoType:  GoTypeName(c.Type),
-			JSONTag: camelToJSONTag(GoFieldName(c.Name)),
+			JSONTag: c.Name,
 		}
 		inferred.Conditions = append(inferred.Conditions, ti)
 	}

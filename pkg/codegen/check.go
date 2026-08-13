@@ -833,6 +833,9 @@ func (g *CheckGenerator) fieldSatisfiedExpr(goName string) string {
 	isPtr := ft.GoType.Nullable()
 	base := ft.SemanticBase()
 	if isPtr {
+		if hasIsEmpty && strings.HasPrefix(string(base), "[]") {
+			return fmt.Sprintf("(func() bool { v := f.%s; return v != nil && len(*v) > 0 })()", goName)
+		}
 		switch base {
 		case GoString:
 			return fmt.Sprintf("(func() bool { v := f.%s; return v != nil && *v != \"\" })()", goName)

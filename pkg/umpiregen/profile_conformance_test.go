@@ -3,6 +3,7 @@ package umpiregen
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -227,16 +228,20 @@ func profileRunFailureConformanceFixture(t *testing.T, path, id string) {
 	for _, failure := range fixture.Failures {
 		failure := failure
 		t.Run(failure.ID, func(t *testing.T) {
-			// Definition issues are Profile compilation rejection. GenerateProfile
-			// still runs so callers can observe any declared problems, even when
-			// generation ultimately fails.
+			// Definition issues reject profile compilation while remaining available
+			// both in the returned slice and the typed error.
 			source, issues, err := GenerateProfile(failure.Profile, Config{
 				PkgName:    "profilefixture",
 				SchemaName: profileConformanceName(failure.ID),
 			})
-			_ = source
-			_ = err
+			var definitionErr *DefinitionError
+			if source != "" || !errors.As(err, &definitionErr) {
+				t.Fatalf("GenerateProfile() = source %q, err %T %v; want closed DefinitionError", source, err, err)
+			}
 			profileAssertDefinitionIssues(t, issues, failure.ExpectedDefinitionIssues)
+			if !reflect.DeepEqual(definitionErr.Issues, issues) {
+				t.Fatalf("DefinitionError issues = %+v, want returned %+v", definitionErr.Issues, issues)
+			}
 		})
 	}
 }
