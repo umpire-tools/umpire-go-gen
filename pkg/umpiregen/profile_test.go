@@ -1369,6 +1369,31 @@ func TestGenerateProfileRejectsGeneratedSymbolCollisions(t *testing.T) {
 	}
 }
 
+func TestGenerateProfileRejectsGoKeywordWireNames(t *testing.T) {
+	propertyProfile := strings.ReplaceAll(string(profileSchemaFixtureJSON(`{"type":"string"}`, "")), `"value"`, `"type"`)
+	propertyResult, err := ParseProfile([]byte(propertyProfile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHasIssue(t, propertyResult.Issues, "invalidName", "/valueSchema/properties/type")
+
+	defsProfile := []byte(fmt.Sprintf(`{
+		"$schema":%q,"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"value":{"$ref":"#/$defs/type"}},
+			"additionalProperties":false,
+			"$defs":{"type":{"type":"string"}}
+		},
+		"umpire":{"version":1,"fields":{"value":{}},"rules":[]}
+	}`, ProfileSchemaURI))
+	defsResult, err := ParseProfile(defsProfile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHasIssue(t, defsResult.Issues, "invalidName", "/valueSchema/$defs/type")
+}
+
 func TestGenerateProfileRejectsNestedTypeAndGeneratedConstantCollisions(t *testing.T) {
 	profile := []byte(fmt.Sprintf(`{
 		"$schema":%q,"profileVersion":1,
