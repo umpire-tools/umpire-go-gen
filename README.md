@@ -100,7 +100,7 @@ For a schema named `checkout.umpire.json`, the tool emits `checkout_gen.go` cont
 Place this in the consuming package (for example, in `checkout.go`):
 
 ```go
-//go:generate go run github.com/umpire-tools/umpire-go-gen@v0.1.1 -i ../../schemas/checkout.umpire.json -output-file checkout_gen.go -pkg availability
+//go:generate go run github.com/umpire-tools/umpire-go-gen@v0.2.0 -i ../../schemas/checkout.umpire.json -output-file checkout_gen.go -pkg availability
 ```
 
 Then run `go generate ./...` to regenerate.
