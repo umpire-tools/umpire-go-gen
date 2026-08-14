@@ -1,7 +1,9 @@
 package umpiregen
 
 import (
+	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -149,8 +151,8 @@ func TestGenerateProfile_ValidInline(t *testing.T) {
 	testutil.AssertGeneratedPackageCompiles(t, source)
 }
 
-func TestGenerateProfile_ReturnsIssues(t *testing.T) {
-	// Profile with an excluded keyword should return issues but still generate code.
+func TestGenerateProfile_RejectsDefinitionIssues(t *testing.T) {
+	// Profile compilation fails closed when an excluded keyword is present.
 	profileJSON := []byte(`{
 		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
 		"profileVersion": 1,
@@ -170,15 +172,53 @@ func TestGenerateProfile_ReturnsIssues(t *testing.T) {
 	}`)
 
 	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "issues", SchemaName: "IssuesTest"})
-	if err != nil {
-		t.Fatalf("GenerateProfile() error: %v", err)
+	var definitionErr *DefinitionError
+	if !errors.As(err, &definitionErr) {
+		t.Fatalf("GenerateProfile() error = %T %v, want *DefinitionError", err, err)
 	}
-	if len(issues) == 0 {
-		t.Fatal("expected definition issues, got none")
+	if len(issues) == 0 || !reflect.DeepEqual(definitionErr.Issues, issues) {
+		t.Fatalf("definition issues = %+v, error issues = %+v", issues, definitionErr.Issues)
 	}
-	if source == "" {
-		t.Fatal("expected source even with issues")
+	if source != "" {
+		t.Fatalf("GenerateProfile() returned unsafe source: %s", source)
 	}
+}
+
+func TestGenerateProfile_FieldMismatchRejectsDuplicateMergedDeclaration(t *testing.T) {
+	profileJSON := []byte(`{
+		"$schema": "https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion": 1,
+		"valueSchema": {
+			"$schema": "https://json-schema.org/draft/2020-12/schema",
+			"type": "object",
+			"properties": {
+				"fields": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		"umpire": {
+			"version": 1,
+			"fields": { "other": { "isEmpty": "string" } },
+			"rules": []
+		}
+	}`)
+
+	// Empty configured names and the declared field mismatch are both rejected
+	// before generation; no non-compilable merged source is returned.
+	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "profile"})
+	if source != "" {
+		t.Fatalf("GenerateProfile() returned source despite merge failure:\n%s", source)
+	}
+	var definitionErr *DefinitionError
+	if !errors.As(err, &definitionErr) {
+		t.Fatalf("GenerateProfile() error = %T %v, want *DefinitionError", err, err)
+	}
+	assertHasIssue(t, issues, "fieldMismatch", "/valueSchema")
+	assertHasIssue(t, issues, "invalidName", "/generation/schemaName")
 }
 
 func TestGenerateProfile_InvalidJSON(t *testing.T) {
@@ -221,8 +261,8 @@ func TestGenerateComposed_MissingValueSchema(t *testing.T) {
 	}
 }
 
-func TestGenerateComposed_ReturnsIssues(t *testing.T) {
-	// Composed mode with an excluded keyword should propagate definition issues.
+func TestGenerateComposed_RejectsDefinitionIssues(t *testing.T) {
+	// Composed mode preserves issues while failing closed.
 	umpireJSON := []byte(`{
 		"version": 1,
 		"fields": { "x": { "isEmpty": "string" } },
@@ -237,11 +277,12 @@ func TestGenerateComposed_ReturnsIssues(t *testing.T) {
 		"additionalProperties": false
 	}`)
 
-	_, issues, err := GenerateComposed(umpireJSON, valueSchemaJSON, Config{PkgName: "issues", SchemaName: "IssuesComposed"})
-	if err != nil {
-		t.Fatalf("GenerateComposed() error: %v", err)
+	source, issues, err := GenerateComposed(umpireJSON, valueSchemaJSON, Config{PkgName: "issues", SchemaName: "IssuesComposed"})
+	var definitionErr *DefinitionError
+	if !errors.As(err, &definitionErr) || source != "" {
+		t.Fatalf("GenerateComposed() = source %q, err %T %v; want closed DefinitionError", source, err, err)
 	}
-	if len(issues) == 0 {
+	if len(issues) == 0 || !reflect.DeepEqual(definitionErr.Issues, issues) {
 		t.Fatal("expected definition issues from composed profile, got none")
 	}
 	foundUnsupportedKeyword := false
@@ -253,6 +294,29 @@ func TestGenerateComposed_ReturnsIssues(t *testing.T) {
 	}
 	if !foundUnsupportedKeyword {
 		t.Fatalf("expected unsupportedKeyword issue in issues: %+v", issues)
+	}
+}
+
+func TestGenerateProfileAcceptsGoKeywordWireSpellingsAfterConversion(t *testing.T) {
+	profileJSON := []byte(`{
+		"$schema":"https://spec.umpire.tools/profiles/json-schema/v1/profile.schema.json",
+		"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"map":{"type":"string"},"func":{"type":"string"},"type":{"type":"string"}},
+			"additionalProperties":false
+		},
+		"umpire":{"version":1,"fields":{"map":{},"func":{},"type":{}},"rules":[]}
+	}`)
+	source, issues, err := GenerateProfile(profileJSON, Config{PkgName: "keywords", SchemaName: "Type"})
+	if err != nil {
+		t.Fatalf("GenerateProfile() error: %v", err)
+	}
+	if len(issues) != 0 {
+		t.Fatalf("expected keyword wire spellings to be accepted after conversion: %+v", issues)
+	}
+	if !strings.Contains(source, "Type") {
+		t.Fatalf("generated source missing exported Type symbol:\n%s", source)
 	}
 }
 

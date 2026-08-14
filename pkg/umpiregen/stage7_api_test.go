@@ -41,7 +41,7 @@ func TestGenerateComposedStructural_RawAPI(t *testing.T) {
 		"func ValidateDocJSON(data []byte)",
 		"func DecodeDoc(data []byte)",
 		"XMLParser",
-		"`json:\"XMLParser,omitempty\"`",
+		`json:\"XMLParser\"`,
 		"Count *int64",
 	} {
 		if !strings.Contains(source, want) {
@@ -63,7 +63,9 @@ func TestRawAPI(t *testing.T) {
 	valid := []byte("{\"action\":{\"kind\":\"RUN\",\"XMLParser\":\"okay\"},\"count\":2}")
 	out, err := DecodeDoc(valid)
 	if err != nil { t.Fatal(err) }
-	if out.Action == nil || out.Action.XMLParser == nil || *out.Action.XMLParser != "okay" { t.Fatalf("original union wire did not decode: %+v", out.Action) }
+	if out.Action == nil { t.Fatal("missing decoded action") }
+	run, ok := out.Action.Value.(*DocActionValueRUN)
+	if !ok || run.XMLParser != "okay" { t.Fatalf("original union wire did not decode: %T %+v", out.Action.Value, out.Action.Value) }
 	if out.Count == nil || *out.Count != 2 { t.Fatalf("top-level integer pointer = %+v", out.Count) }
 
 	issues, err := ValidateDocJSON([]byte("{\"action\":{\"kind\":\"RUN\",\"XMLParser\":\"x\",\"extra\":true},\"count\":9007199254740992}"))

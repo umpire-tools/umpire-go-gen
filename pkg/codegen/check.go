@@ -80,13 +80,20 @@ func (g *CheckGenerator) genHelper() string {
 		gn := GoFieldName(ft.Name)
 		goType := ft.GoType
 		isPtr := goType.Nullable()
-		base := goType.Base()
+		base := ft.SemanticBase()
 
 		b.WriteString("\tcase ")
 		b.WriteString(q(gn))
 		b.WriteString(":\n")
 
 		if isPtr {
+			fd := g.fieldRuleMap[gn]
+			if fd != nil && fd.IsEmpty && strings.HasPrefix(string(base), "[]") {
+				b.WriteString("\t\tv := f.")
+				b.WriteString(gn)
+				b.WriteString("\n\t\treturn v != nil && len(*v) > 0\n")
+				continue
+			}
 			switch base {
 			case GoString:
 				b.WriteString("		v := f.")
@@ -316,7 +323,7 @@ func (g *CheckGenerator) genCheckBody() string {
 		b.WriteString("\t")
 		b.WriteString(gn)
 		b.WriteString("Satisfied := ")
-		g.emitSatisfied(&b, gn, ft.GoType, ft.GoType.Base(), ft.GoType.Nullable(), fd.IsEmpty)
+		g.emitSatisfied(&b, gn, ft, fd.IsEmpty)
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -503,8 +510,16 @@ func (g *CheckGenerator) emitEnabled(b *strings.Builder, fd *FieldRuleData) {
 	}
 }
 
-func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, goType GoType, base GoType, isPtr bool, hasIsEmpty bool) {
-	if isPtr {
+func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, ft FieldTypeInfo, hasIsEmpty bool) {
+	goType := ft.GoType
+	base := ft.SemanticBase()
+	if goType.Nullable() {
+		if hasIsEmpty && strings.HasPrefix(string(base), "[]") {
+			b.WriteString("func() bool { v := f.")
+			b.WriteString(gn)
+			b.WriteString("; return v != nil && len(*v) > 0 }()")
+			return
+		}
 		switch base {
 		case GoString:
 			b.WriteString("func() bool { v := f.")
@@ -530,7 +545,7 @@ func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, goType GoT
 		b.WriteString(") > 0")
 		return
 	}
-	switch goType {
+	switch base {
 	case GoStringSlice, GoFloat64Slice:
 		b.WriteString("len(f.")
 		b.WriteString(gn)
@@ -816,8 +831,11 @@ func (g *CheckGenerator) fieldSatisfiedExpr(goName string) string {
 		hasIsEmpty = depFD.IsEmpty
 	}
 	isPtr := ft.GoType.Nullable()
-	base := ft.GoType.Base()
+	base := ft.SemanticBase()
 	if isPtr {
+		if hasIsEmpty && strings.HasPrefix(string(base), "[]") {
+			return fmt.Sprintf("(func() bool { v := f.%s; return v != nil && len(*v) > 0 })()", goName)
+		}
 		switch base {
 		case GoString:
 			return fmt.Sprintf("(func() bool { v := f.%s; return v != nil && *v != \"\" })()", goName)
@@ -827,7 +845,7 @@ func (g *CheckGenerator) fieldSatisfiedExpr(goName string) string {
 	}
 	// Non-pointer with explicit isEmpty: empty values are unsatisfied.
 	if hasIsEmpty {
-		switch ft.GoType {
+		switch base {
 		case GoStringSlice, GoFloat64Slice:
 			return fmt.Sprintf("len(f.%s) > 0", goName)
 		case GoMap:

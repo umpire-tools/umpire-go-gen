@@ -3,6 +3,7 @@ package codegen
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"text/template"
 
 	"github.com/umpire-tools/umpire-go-gen/pkg/schema"
@@ -26,6 +27,9 @@ type Generator struct {
 	// structural valueSchema types in the availability Fields struct. Empty by
 	// default so the availability-only path is byte-for-byte unchanged.
 	Overrides map[string]GoType
+	// fieldUnderlyingTypes carries primitive semantics for structural named
+	// types without changing the generated public field types.
+	fieldUnderlyingTypes map[string]GoType
 }
 
 // NewGenerator creates a Generator for the given schema and config.
@@ -58,6 +62,13 @@ func (g *Generator) WithFields(fields []schema.FieldDef) *Generator {
 // type inference. Provide nil/empty to keep inference for all fields.
 func (g *Generator) WithFieldTypeOverrides(overrides map[string]GoType) *Generator {
 	g.Overrides = overrides
+	return g
+}
+
+// WithFieldUnderlyingTypes records the scalar/container semantics of generated
+// named field types. It affects emptiness evaluation only, not emitted APIs.
+func (g *Generator) WithFieldUnderlyingTypes(underlying map[string]GoType) *Generator {
+	g.fieldUnderlyingTypes = underlying
 	return g
 }
 
@@ -99,6 +110,11 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 	fieldsTypeInfo := g.Inferred.Fields
 	if len(g.Overrides) > 0 {
 		fieldsTypeInfo = applyTypeOverrides(g.Inferred.Fields, g.Overrides)
+	}
+	if len(g.fieldUnderlyingTypes) > 0 {
+		fieldsTypeInfo = applyUnderlyingTypes(fieldsTypeInfo, g.fieldUnderlyingTypes)
+	}
+	if len(g.Overrides) > 0 || len(g.fieldUnderlyingTypes) > 0 {
 		fieldTypes = make(map[string]GoType, len(fieldsTypeInfo))
 		for _, ft := range fieldsTypeInfo {
 			fieldTypes[ft.Name] = ft.GoType
@@ -183,6 +199,17 @@ func applyTypeOverrides(fields []FieldTypeInfo, overrides map[string]GoType) []F
 	return out
 }
 
+func applyUnderlyingTypes(fields []FieldTypeInfo, underlying map[string]GoType) []FieldTypeInfo {
+	out := make([]FieldTypeInfo, len(fields))
+	copy(out, fields)
+	for i := range out {
+		if t, ok := underlying[out[i].Name]; ok {
+			out[i].UnderlyingType = t
+		}
+	}
+	return out
+}
+
 // generationTemplateData is the data passed to the Go template.
 type generationTemplateData struct {
 	PkgName          string
@@ -225,6 +252,12 @@ var templateFuncMap = template.FuncMap{
 	"activeField": func(groupName string) string {
 		return fmt.Sprintf("	%s %s `json:\"-\"`", "Active"+GoFieldName(groupName), groupName)
 	},
+	"structTag": func(jsonName string, omitEmpty bool) string {
+		if omitEmpty {
+			jsonName += ",omitempty"
+		}
+		return strconv.Quote("json:" + strconv.Quote(jsonName))
+	},
 }
 
 // templateSrc is the Go source template.
@@ -243,14 +276,14 @@ import (
 // {{ .FieldsName }} holds the fields for {{ .SchemaName }} availability checks.
 type {{ .FieldsName }} struct {
 {{- range .Fields }}
-	{{ goFieldNameFT . }} {{ goType . }} ` + "`json:\"{{ .JSONTag }},omitempty\"`" + `
+	{{ goFieldNameFT . }} {{ goType . }} {{ structTag .JSONTag true }}
 {{- end }}
 }
 
 // {{ .ConditionsName }} holds the conditions for {{ .SchemaName }} availability checks.
 type {{ .ConditionsName }} struct {
 {{- range .Conditions }}
-	{{ goFieldName .Name }} {{ condGoType . }} ` + "`json:\"{{ .JSONTag }}\"`" + `
+	{{ goFieldName .Name }} {{ condGoType . }} {{ structTag .JSONTag false }}
 {{- end }}
 }
 

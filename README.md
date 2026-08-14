@@ -43,6 +43,16 @@ source, err := umpiregen.Generate(schemaJSON, umpiregen.Config{
 })
 ```
 
+Profile generation fails closed on definition issues:
+
+```go
+source, issues, err := umpiregen.GenerateProfile(profileJSON, cfg)
+// If issues is non-empty, source is empty and err is a *umpiregen.DefinitionError.
+```
+
+Call `ParseProfile` or `ParseComposed` directly when you only need to inspect
+profile definition issues without generating source.
+
 ## Development
 
 ```bash

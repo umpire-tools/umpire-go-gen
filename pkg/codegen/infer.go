@@ -12,6 +12,18 @@ type FieldTypeInfo struct {
 	Name    string
 	GoType  GoType
 	JSONTag string
+	// UnderlyingType records scalar semantics when GoType is a generated named
+	// type (for example *WorkflowType with underlying string). It is empty for
+	// ordinary inferred types, where GoType itself supplies the semantics.
+	UnderlyingType GoType
+}
+
+// SemanticBase returns the primitive/container type used for emptiness checks.
+func (f FieldTypeInfo) SemanticBase() GoType {
+	if f.UnderlyingType != "" {
+		return f.UnderlyingType.Base()
+	}
+	return f.GoType.Base()
 }
 
 // ConditionTypeInfo holds the type info for a schema condition.
@@ -78,7 +90,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 	for _, f := range s.Fields {
 		ti := FieldTypeInfo{
 			Name:    f.Name,
-			JSONTag: camelToJSONTag(GoFieldName(f.Name)),
+			JSONTag: f.Name,
 		}
 
 		// Use explicit type hint if present
@@ -102,7 +114,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		ti := ConditionTypeInfo{
 			Name:    c.Name,
 			GoType:  GoTypeName(c.Type),
-			JSONTag: camelToJSONTag(GoFieldName(c.Name)),
+			JSONTag: c.Name,
 		}
 		inferred.Conditions = append(inferred.Conditions, ti)
 	}

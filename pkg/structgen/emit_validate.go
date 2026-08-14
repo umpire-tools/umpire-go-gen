@@ -3,6 +3,8 @@ package structgen
 import (
 	"fmt"
 	"strings"
+
+	"github.com/umpire-tools/umpire-go-gen/pkg/codegen"
 )
 
 // isJSONNull returns a Go expression that is truthy when the raw map value is JSON null.
@@ -13,10 +15,11 @@ func isJSONNullExpr(r string) string {
 // emitStrictDecode renders an UnmarshalJSON for an object type that rejects
 // unknown properties, JSON null for any known field, and missing required
 // fields. Trailing JSON after the value is rejected by encoding/json.
-func emitStrictDecode(b *strings.Builder, td TypeDef) {
+func emitStrictDecode(b *strings.Builder, td TypeDef, schemaPrefix string) {
 	fmt.Fprintf(b, "func (v *%s) UnmarshalJSON(data []byte) error {\n", td.Name)
 	b.WriteString("\tvar raw map[string]json.RawMessage\n")
 	b.WriteString("\tif err := json.Unmarshal(data, &raw); err != nil {\n\t\treturn err\n\t}\n")
+	b.WriteString("\tif raw == nil { return fmt.Errorf(\"expected object, got null\") }\n")
 	b.WriteString("\tfor key := range raw {\n\t\tswitch key {\n")
 	for _, f := range td.Fields {
 		fmt.Fprintf(b, "\t\tcase %q:\n", f.JSONTag)
@@ -39,8 +42,68 @@ func emitStrictDecode(b *strings.Builder, td TypeDef) {
 		}
 	}
 	fmt.Fprintf(b, "\ttype alias %s\n", td.Name)
-	b.WriteString("\treturn json.Unmarshal(data, (*alias)(v))\n")
+	b.WriteString("\tvar next alias\n")
+	counter := 0
+	for _, f := range td.Fields {
+		fmt.Fprintf(b, "\tif encoded, ok := raw[%q]; ok {\n", f.JSONTag)
+		target := "next." + f.GoName
+		if f.Required {
+			if needsIntegralDecode(f.Type) {
+				emitIntegralDecode(b, f.Type, "encoded", target, "\t\t", schemaPrefix, &counter)
+			} else {
+				fmt.Fprintf(b, "\t\tif err := json.Unmarshal(encoded, &%s); err != nil { return err }\n", target)
+			}
+		} else {
+			local := fmt.Sprintf("decoded%d", counter)
+			counter++
+			fmt.Fprintf(b, "\t\tvar %s %s\n", local, baseGoType(f.Type))
+			if needsIntegralDecode(f.Type) {
+				emitIntegralDecode(b, f.Type, "encoded", local, "\t\t", schemaPrefix, &counter)
+			} else {
+				fmt.Fprintf(b, "\t\tif err := json.Unmarshal(encoded, &%s); err != nil { return err }\n", local)
+			}
+			fmt.Fprintf(b, "\t\tnext.%s = &%s\n", f.GoName, local)
+		}
+		b.WriteString("\t}\n")
+	}
+	fmt.Fprintf(b, "\t*v = %s(next)\n", td.Name)
+	b.WriteString("\treturn nil\n")
 	b.WriteString("}\n\n")
+}
+
+func needsIntegralDecode(ft FieldType) bool {
+	if (ft.Kind == KindScalar || ft.Kind == KindEnum) && ft.Scalar == ScalarInt {
+		return true
+	}
+	return ft.Kind == KindArray && ft.Elem != nil && needsIntegralDecode(*ft.Elem)
+}
+
+func emitIntegralDecode(b *strings.Builder, ft FieldType, raw, target, indent, schemaPrefix string, counter *int) {
+	if ft.Kind == KindScalar || ft.Kind == KindEnum {
+		value := fmt.Sprintf("integer%d", *counter)
+		*counter++
+		fmt.Fprintf(b, "%s%s, integral, safe := %sStructuralIntParts(%s)\n", indent, value, schemaPrefix, raw)
+		fmt.Fprintf(b, "%sif !integral || !safe { return fmt.Errorf(\"integer value is not a safe mathematical integer\") }\n", indent)
+		fmt.Fprintf(b, "%s%s = %s(%s)\n", indent, target, baseGoType(ft), value)
+		return
+	}
+	if ft.Kind != KindArray || ft.Elem == nil {
+		fmt.Fprintf(b, "%sif err := json.Unmarshal(%s, &%s); err != nil { return err }\n", indent, raw, target)
+		return
+	}
+	items := fmt.Sprintf("items%d", *counter)
+	*counter++
+	fmt.Fprintf(b, "%svar %s []json.RawMessage\n", indent, items)
+	fmt.Fprintf(b, "%sif err := json.Unmarshal(%s, &%s); err != nil { return err }\n", indent, raw, items)
+	fmt.Fprintf(b, "%s%s = make(%s, 0, len(%s))\n", indent, target, baseGoType(ft), items)
+	itemRaw := fmt.Sprintf("itemRaw%d", *counter)
+	item := fmt.Sprintf("item%d", *counter)
+	*counter++
+	fmt.Fprintf(b, "%sfor _, %s := range %s {\n", indent, itemRaw, items)
+	fmt.Fprintf(b, "%s\tvar %s %s\n", indent, item, baseGoType(*ft.Elem))
+	emitIntegralDecode(b, *ft.Elem, itemRaw, item, indent+"\t", schemaPrefix, counter)
+	fmt.Fprintf(b, "%s\t%s = append(%s, %s)\n", indent, target, target, item)
+	fmt.Fprintf(b, "%s}\n", indent)
 }
 
 // emitValidation renders Validate() (root), validateInto() (every object/union),
@@ -63,10 +126,30 @@ func emitValidation(b *strings.Builder, spec *Spec) {
 
 	emitValidateInto(b, spec, spec.RootName, spec.Root)
 	for _, td := range spec.Types {
-		if td.Kind == KindObject || td.Kind == KindUnion {
+		if td.AliasRef != "" {
+			continue
+		}
+		switch td.Kind {
+		case KindObject:
 			emitValidateInto(b, spec, td.Name, td.Fields)
+		case KindUnion:
+			emitUnionValidateInto(b, spec, td)
+			for _, branch := range td.Branches {
+				emitValidateInto(b, spec, td.Name+"Value"+codegen.GoFieldName(branch.Wire), branch.Fields)
+			}
 		}
 	}
+}
+
+func emitUnionValidateInto(b *strings.Builder, _ *Spec, td TypeDef) {
+	fmt.Fprintf(b, "func (v %s) validate(path string, issues *[]Issue) {\n", td.Name)
+	b.WriteString("\tswitch branch := v.Value.(type) {\n")
+	for _, branch := range td.Branches {
+		variant := td.Name + "Value" + codegen.GoFieldName(branch.Wire)
+		fmt.Fprintf(b, "\tcase *%s:\n\t\tbranch.validate(path, issues)\n", variant)
+	}
+	b.WriteString("\tcase nil:\n\t\t*issues = append(*issues, Issue{Code: \"required\", Path: path})\n")
+	b.WriteString("\t}\n}\n\n")
 }
 
 func emitValidateInto(b *strings.Builder, spec *Spec, typeName string, fields []FieldDef) {
@@ -99,6 +182,9 @@ func emitFieldValidate(b *strings.Builder, spec *Spec, f FieldDef) {
 
 	// Scalar constraints, guarded by presence for optional fields.
 	present, val := presentAndValue(f)
+	if f.Type.Ref != "" && f.Type.Scalar == ScalarString {
+		val = "string(" + val + ")"
+	}
 	if !alwaysPresent(f) {
 		fmt.Fprintf(b, "\tif %s {\n", present)
 	}
@@ -109,32 +195,87 @@ func emitFieldValidate(b *strings.Builder, spec *Spec, f FieldDef) {
 }
 
 func emitArrayValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPath string) {
-	// min/max items (nil slice present guard handled by len() == 0 below; a nil
-	// slice reports 0 items so no separate guard is required).
+	array := gn
+	if !f.Required {
+		fmt.Fprintf(b, "\tif %s != nil {\n", gn)
+		array = "*" + gn
+	}
 	if f.MinItems != nil {
-		fmt.Fprintf(b, "\tif len(%s) < %d {\n", gn, *f.MinItems)
+		fmt.Fprintf(b, "\tif len(%s) < %d {\n", array, *f.MinItems)
 		emitIssue(b, "minItems", tagPath)
 		b.WriteString("\t}\n")
 	}
 	if f.MaxItems != nil {
-		fmt.Fprintf(b, "\tif len(%s) > %d {\n", gn, *f.MaxItems)
+		fmt.Fprintf(b, "\tif len(%s) > %d {\n", array, *f.MaxItems)
 		emitIssue(b, "maxItems", tagPath)
 		b.WriteString("\t}\n")
 	}
 
-	elem := f.Type.Elem
-	switch {
-	case elem.IsReference() && (elem.Kind == KindObject || elem.Kind == KindUnion):
-		fmt.Fprintf(b, "\tfor i, it := range %s {\n", gn)
-		fmt.Fprintf(b, "\t\tit.validate(path+\"/%s/\"+strconv.Itoa(i), issues)\n", f.JSONTag)
+	if f.Type.Elem != nil && needsTypedElementValidation(*f.Type.Elem) {
+		fmt.Fprintf(b, "\tfor i, it := range %s {\n", array)
+		emitArrayElementValidate(b, spec, *f.Type.Elem, "it", tagPath+` + "/" + strconv.Itoa(i)`)
 		b.WriteString("\t}\n")
-	case elem.Kind == KindEnum:
-		emitArrayEnumValidate(b, spec, f, gn, tagPath)
+	}
+	if !f.Required {
+		b.WriteString("\t}\n")
+	}
+}
+
+func needsTypedElementValidation(elem FieldType) bool {
+	if elem.Kind == KindObject || elem.Kind == KindUnion || elem.Kind == KindEnum {
+		return true
+	}
+	c := elem.Constraints
+	if c.MinLength != nil || c.MaxLength != nil || c.Minimum != nil || c.Maximum != nil || c.ExclusiveMinimum != nil || c.ExclusiveMaximum != nil || c.MinItems != nil || c.MaxItems != nil || c.HasConst {
+		return true
+	}
+	return elem.Kind == KindArray && elem.Elem != nil && needsTypedElementValidation(*elem.Elem)
+}
+
+func emitArrayElementValidate(b *strings.Builder, spec *Spec, elem FieldType, value, elemPath string) {
+	switch elem.Kind {
+	case KindObject, KindUnion:
+		fmt.Fprintf(b, "\t\t%s.validate(%s, issues)\n", value, elemPath)
+	case KindEnum:
+		enum := spec.Resolve(elem.Ref)
+		if enum == nil {
+			return
+		}
+		fmt.Fprintf(b, "\t\tswitch %s {\n", value)
+		for _, allowed := range enum.Values {
+			fmt.Fprintf(b, "\t\tcase %s%s:\n", enum.Name, allowed.Name)
+		}
+		b.WriteString("\t\tdefault:\n")
+		fmt.Fprintf(b, "\t\t\t*issues = append(*issues, Issue{Code: \"enum\", Path: %s})\n", elemPath)
+		b.WriteString("\t\t}\n")
+		constraint := FieldDef{Type: FieldType{Kind: KindScalar, Scalar: enum.Scalar}, Constraints: elem.Constraints}
+		scalarValue := value
+		if enum.Scalar == ScalarString {
+			scalarValue = "string(" + value + ")"
+		}
+		emitScalarConstraints(b, constraint, scalarValue, elemPath)
+	case KindScalar:
+		if elem.Ref != "" && elem.Scalar == ScalarString {
+			value = "string(" + value + ")"
+		}
+		emitScalarConstraints(b, FieldDef{Type: elem, Constraints: elem.Constraints}, value, elemPath)
+	case KindArray:
+		if elem.Constraints.MinItems != nil {
+			fmt.Fprintf(b, "\t\tif len(%s) < %d { *issues = append(*issues, Issue{Code: \"minItems\", Path: %s}) }\n", value, *elem.Constraints.MinItems, elemPath)
+		}
+		if elem.Constraints.MaxItems != nil {
+			fmt.Fprintf(b, "\t\tif len(%s) > %d { *issues = append(*issues, Issue{Code: \"maxItems\", Path: %s}) }\n", value, *elem.Constraints.MaxItems, elemPath)
+		}
+		if elem.Elem != nil {
+			b.WriteString("\t\tfor j, nested := range " + value + " {\n")
+			emitArrayElementValidate(b, spec, *elem.Elem, "nested", elemPath+` + "/" + strconv.Itoa(j)`)
+			b.WriteString("\t\t}\n")
+		}
 	}
 }
 
 func emitArrayEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPath string) {
-	enum := spec.Lookup(f.Type.Elem.Ref)
+	enum := spec.Resolve(f.Type.Elem.Ref)
 	if enum == nil {
 		return
 	}
@@ -149,10 +290,11 @@ func emitArrayEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPa
 	b.WriteString("\t}\n")
 }
 
-// emitEnumValidate checks an enum-typed field's value is one of its declared
-// constants (direct field, not array).
+// emitEnumValidate checks both membership and constraints attached to an
+// enum-typed field. Enum fields retain a named Go type, so use the enum's
+// underlying scalar solely to select the applicable constraint checks.
 func emitEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPath string) {
-	enum := spec.Lookup(f.Type.Ref)
+	enum := spec.Resolve(f.Type.Ref)
 	if enum == nil {
 		return
 	}
@@ -167,6 +309,13 @@ func emitEnumValidate(b *strings.Builder, spec *Spec, f FieldDef, gn, tagPath st
 	fmt.Fprintf(b, "\tdefault:\n")
 	emitIssue(b, "enum", tagPath)
 	b.WriteString("\t}\n")
+	constraintField := f
+	constraintField.Type = FieldType{Kind: KindScalar, Scalar: enum.Scalar}
+	constraintValue := val
+	if enum.Scalar == ScalarString {
+		constraintValue = "string(" + val + ")"
+	}
+	emitScalarConstraints(b, constraintField, constraintValue, tagPath)
 	if !alwaysPresent(f) {
 		b.WriteString("\t}\n")
 	}
@@ -198,6 +347,16 @@ func emitScalarConstraints(b *strings.Builder, f FieldDef, val, tagPath string) 
 			emitIssue(b, "maximum", tagPath)
 			b.WriteString("\t}\n")
 		}
+		if f.ExclusiveMinimum != nil {
+			fmt.Fprintf(b, "\tif float64(%s) <= %v {\n", val, *f.ExclusiveMinimum)
+			emitIssue(b, "exclusiveMinimum", tagPath)
+			b.WriteString("\t}\n")
+		}
+		if f.ExclusiveMaximum != nil {
+			fmt.Fprintf(b, "\tif float64(%s) >= %v {\n", val, *f.ExclusiveMaximum)
+			emitIssue(b, "exclusiveMaximum", tagPath)
+			b.WriteString("\t}\n")
+		}
 	case ScalarNumber:
 		if f.Minimum != nil {
 			fmt.Fprintf(b, "\tif %s < %v {\n", val, *f.Minimum)
@@ -207,6 +366,16 @@ func emitScalarConstraints(b *strings.Builder, f FieldDef, val, tagPath string) 
 		if f.Maximum != nil {
 			fmt.Fprintf(b, "\tif %s > %v {\n", val, *f.Maximum)
 			emitIssue(b, "maximum", tagPath)
+			b.WriteString("\t}\n")
+		}
+		if f.ExclusiveMinimum != nil {
+			fmt.Fprintf(b, "\tif %s <= %v {\n", val, *f.ExclusiveMinimum)
+			emitIssue(b, "exclusiveMinimum", tagPath)
+			b.WriteString("\t}\n")
+		}
+		if f.ExclusiveMaximum != nil {
+			fmt.Fprintf(b, "\tif %s >= %v {\n", val, *f.ExclusiveMaximum)
+			emitIssue(b, "exclusiveMaximum", tagPath)
 			b.WriteString("\t}\n")
 		}
 	}

@@ -2,6 +2,9 @@ package umpiregen
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"sort"
 	"strings"
 
@@ -14,13 +17,14 @@ import (
 // Check and Challenge use the richer root field types.
 // Inputs without a value schema retain the existing availability-only output.
 func generateStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, error) {
-	if src, ok, _ := tryStructural(umpireJSON, valueSchemaJSON, cfg); ok {
-		return src, nil
+	src, ok, err := tryStructural(umpireJSON, valueSchemaJSON, cfg)
+	if err != nil {
+		return "", err
 	}
-	// The valueSchema could not be mapped to structural types (e.g. it contains
-	// an excluded keyword like allOf). Fall back to availability-only output; the
-	// profile definition issues are surfaced separately by the caller.
-	return generateFromBytes(umpireJSON, cfg)
+	if !ok {
+		return "", fmt.Errorf("value schema is required for structural profile generation")
+	}
+	return src, nil
 }
 
 // tryStructural attempts to emit structural + availability merged output. The
@@ -32,7 +36,7 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 
 	spec, err := structgen.Build(valueSchemaJSON, cfg.SchemaName)
 	if err != nil {
-		return "", false, nil
+		return "", false, fmt.Errorf("build structural schema: %w", err)
 	}
 	fieldsName := cfg.FieldsName
 	if fieldsName == "" {
@@ -44,16 +48,21 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 		RootTypeName: fieldsName,
 	})
 	if err != nil {
-		return "", false, nil
+		return "", false, fmt.Errorf("emit structural schema: %w", err)
 	}
 
-	// Surface the structural root field types in the availability Fields struct.
+	// Surface structural root types in the availability Fields struct while
+	// retaining primitive semantics for named enum emptiness checks.
 	overrides := map[string]codegen.GoType{}
 	for name, t := range structgen.RootGoTypes(spec) {
 		overrides[name] = codegen.GoType(t)
 	}
+	underlying := map[string]codegen.GoType{}
+	for name, t := range structgen.RootUnderlyingGoTypes(spec) {
+		underlying[name] = codegen.GoType(t)
+	}
 
-	avail, err := generateAvailability(umpireJSON, cfg, overrides)
+	avail, err := generateAvailability(umpireJSON, cfg, overrides, underlying)
 	if err != nil {
 		return "", false, err
 	}
@@ -67,7 +76,7 @@ func tryStructural(umpireJSON, valueSchemaJSON []byte, cfg Config) (string, bool
 
 // generateAvailability mirrors generateFromBytes but honors explicit field-type
 // overrides so the availability Fields struct can reference structural types.
-func generateAvailability(schemaJSON []byte, cfg Config, overrides map[string]codegen.GoType) (string, error) {
+func generateAvailability(schemaJSON []byte, cfg Config, overrides, underlying map[string]codegen.GoType) (string, error) {
 	s, err := schema.Parse(schemaJSON)
 	if err != nil {
 		return "", fmt.Errorf("parse schema: %w", err)
@@ -88,6 +97,7 @@ func generateAvailability(schemaJSON []byte, cfg Config, overrides map[string]co
 
 	gen := codegen.NewGenerator(cfg.SchemaName, cfg.PkgName, fieldsName, conditionsName, inferred)
 	gen.WithFieldTypeOverrides(overrides)
+	gen.WithFieldUnderlyingTypes(underlying)
 	gen.WithFields(s.Fields)
 	gen.WithRules(s.Rules)
 	gen.WithSchema(s)
@@ -107,8 +117,12 @@ func mergePackageFiles(sources ...string) (string, error) {
 	var importSet []string
 	var bodies []string
 	importSeen := make(map[string]bool)
+	declarations := make(map[string]bool)
 
 	for _, src := range sources {
+		if err := collectTopLevelDeclarations(src, declarations); err != nil {
+			return "", err
+		}
 		p, imports, body, err := splitPackageFile(src)
 		if err != nil {
 			return "", err
@@ -140,6 +154,42 @@ func mergePackageFiles(sources ...string) (string, error) {
 	}
 	b.WriteString(strings.Join(bodies, "\n\n"))
 	return b.String(), nil
+}
+
+// collectTopLevelDeclarations rejects names that would be redeclared after the
+// generated files are merged. Structural and availability sources independently
+// use schema-derived names, so an invalid profile can otherwise produce source
+// that parses but cannot compile.
+func collectTopLevelDeclarations(src string, seen map[string]bool) error {
+	file, err := parser.ParseFile(token.NewFileSet(), "generated.go", src, 0)
+	if err != nil {
+		return fmt.Errorf("parse generated source: %w", err)
+	}
+	for _, decl := range file.Decls {
+		var names []*ast.Ident
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			if decl.Recv == nil {
+				names = append(names, decl.Name)
+			}
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					names = append(names, spec.Name)
+				case *ast.ValueSpec:
+					names = append(names, spec.Names...)
+				}
+			}
+		}
+		for _, name := range names {
+			if seen[name.Name] {
+				return fmt.Errorf("cannot merge duplicate declaration %q", name.Name)
+			}
+			seen[name.Name] = true
+		}
+	}
+	return nil
 }
 
 // splitPackageFile splits a generated Go source into package name, its import

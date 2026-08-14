@@ -38,6 +38,7 @@ func main() {
 			os.Exit(1)
 		}
 		source, issues, err = umpiregen.GenerateProfile(profileJSON, cfgGen)
+		printDefinitionIssues(issues)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error generating code: %v\n", err)
 			os.Exit(1)
@@ -55,6 +56,7 @@ func main() {
 			os.Exit(1)
 		}
 		source, issues, err = umpiregen.GenerateComposed(umpireJSON, valueSchemaJSON, cfgGen)
+		printDefinitionIssues(issues)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error generating code: %v\n", err)
 			os.Exit(1)
@@ -72,11 +74,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "error generating code: %v\n", err)
 			os.Exit(1)
 		}
-	}
-
-	// Warn about definition issues so users know the profile has structural concerns.
-	for _, iss := range issues {
-		fmt.Fprintf(os.Stderr, "profile definition issue: %s at %s\n", iss.Code, iss.Path)
 	}
 
 	formatted := formatSource(source)
@@ -135,6 +132,12 @@ func writeOutput(formatted []byte, cfg *cli.Config) error {
 	}
 	fmt.Fprintf(os.Stderr, "generated %s\n", outFile)
 	return nil
+}
+
+func printDefinitionIssues(issues []umpiregen.DefinitionIssue) {
+	for _, issue := range issues {
+		fmt.Fprintf(os.Stderr, "profile definition issue: %s at %s\n", issue.Code, issue.Path)
+	}
 }
 
 func loadFile(path string) ([]byte, error) {
