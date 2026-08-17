@@ -386,9 +386,23 @@ func TestBuildUnionDuplicateDiscriminator(t *testing.T) {
 }
 
 func TestBuildRejectsEnumValueMismatchedWithType(t *testing.T) {
-	vs := `{"type":"object","properties":{"mode":{"type":"string","enum":[1]}}}`
-	if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), "enum value is not a string") {
-		t.Fatalf("expected mismatched enum rejection, got: %v", err)
+	for _, tc := range []struct {
+		name string
+		schema string
+		match string
+	}{
+		{"string vs number", `{"type":"string","enum":[1]}`, "enum value is not a string"},
+		{"boolean vs string", `{"type":"boolean","enum":["yes"]}`, "enum value is not a boolean"},
+		{"integer vs string", `{"type":"integer","enum":["1"]}`, "enum value is not an integer"},
+		{"integer vs float", `{"type":"integer","enum":[1.5]}`, "enum value is not an integer"},
+		{"number vs string", `{"type":"number","enum":["0.5"]}`, "enum value is not a number"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vs := `{"type":"object","properties":{"mode":` + tc.schema + `}}`
+			if _, err := Build([]byte(vs), "Doc"); err == nil || !strings.Contains(err.Error(), tc.match) {
+				t.Fatalf("expected mismatch rejection containing %q, got: %v", tc.match, err)
+			}
+		})
 	}
 }
 

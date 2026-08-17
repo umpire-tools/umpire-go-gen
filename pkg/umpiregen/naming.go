@@ -175,16 +175,8 @@ func validateGeneratedSymbols(umpireJSON, valueSchemaJSON []byte, cfg Config) []
 
 	if parsed, err := schema.Parse(umpireJSON); err == nil {
 		if inferred, err := codegen.InferTypes(parsed); err == nil {
-			conditionNames := make(map[string]bool)
 			for _, condition := range inferred.Conditions {
-				name := codegen.GoFieldName(condition.Name)
-				if !validGeneratedIdentifier(name) {
-					issues = append(issues, DefinitionIssue{Code: "invalidName", Path: "/umpire/conditions/" + escapeProfilePointer(condition.Name)})
-				}
-				if conditionNames[name] {
-					issues = append(issues, DefinitionIssue{Code: "nameCollision", Path: "/umpire/conditions"})
-				}
-				conditionNames[name] = true
+				add(codegen.GoFieldName(condition.Name), "/umpire/conditions/"+escapeProfilePointer(condition.Name))
 			}
 			seenGroups := make(map[string]bool)
 			for _, branch := range inferred.Branches {
