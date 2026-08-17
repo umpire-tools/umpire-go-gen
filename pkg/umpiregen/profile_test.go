@@ -1369,6 +1369,24 @@ func TestGenerateProfileRejectsGeneratedSymbolCollisions(t *testing.T) {
 	}
 }
 
+func TestGenerateProfileRejectsConditionSymbolCollision(t *testing.T) {
+	profile := []byte(fmt.Sprintf(`{
+		"$schema":%q,"profileVersion":1,
+		"valueSchema":{
+			"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object",
+			"properties":{"value":{"type":"string"}},
+			"additionalProperties":false
+		},
+		"umpire":{"version":1,"fields":{"value":{"isEmpty":"string"}},"conditions":{"Issue":{"type":"boolean"}},"rules":[{"type":"enabledWhen","field":"value","when":{"op":"cond","condition":"Issue"}}]}
+	}`, ProfileSchemaURI))
+	source, issues, err := GenerateProfile(profile, Config{PkgName: "x", SchemaName: "Doc"})
+	var definitionErr *DefinitionError
+	if source != "" || !errors.As(err, &definitionErr) {
+		t.Fatalf("GenerateProfile() = source %q, err %T %v; want closed DefinitionError", source, err, err)
+	}
+	assertHasIssue(t, issues, "nameCollision", "/umpire/conditions/Issue")
+}
+
 func TestGenerateProfileAcceptsGoKeywordWireNamesAfterConversion(t *testing.T) {
 	propertyProfile := strings.ReplaceAll(string(profileSchemaFixtureJSON(`{"type":"string"}`, "")), `"value"`, `"type"`)
 	propertyResult, err := ParseProfile([]byte(propertyProfile))
