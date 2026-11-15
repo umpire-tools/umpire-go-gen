@@ -2,6 +2,10 @@ package umpiregen
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -278,6 +282,242 @@ func TestGenerateComposedMembershipOnStructuralArrays(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A field with no isEmpty that contains targets holds any JSON value, so every
+// op that reads it has to handle a value of an unexpected JSON type at runtime.
+// Each schema below keeps a contains rule on "raw" because that op is what makes
+// the field resolve to Go's any; the gates under test hang off the same field.
+const membershipAnyTruthySchema = `{"version": 1,
+	"fields": {"raw": {}, "truthyGate": {}, "falsyGate": {}, "containsGate": {}},
+	"rules": [
+		{"type": "enabledWhen", "field": "truthyGate", "when": {"op": "truthy", "field": "raw"}},
+		{"type": "enabledWhen", "field": "falsyGate", "when": {"op": "falsy", "field": "raw"}},
+		{"type": "enabledWhen", "field": "containsGate", "when": {"op": "contains", "field": "raw", "value": "a"}}]}`
+
+const membershipAnyGtSchema = `{"version": 1,
+	"fields": {"raw": {}, "gtGate": {}, "containsGate": {}},
+	"rules": [
+		{"type": "enabledWhen", "field": "gtGate", "when": {"op": "gt", "field": "raw", "value": 5}},
+		{"type": "enabledWhen", "field": "containsGate", "when": {"op": "contains", "field": "raw", "value": "a"}}]}`
+
+const membershipAnyFieldInCondSchema = `{"version": 1,
+	"conditions": {"names": {"type": "string[]"}, "scores": {"type": "number[]"}},
+	"fields": {"raw": {}, "namesGate": {}, "scoresGate": {}, "containsGate": {}},
+	"rules": [
+		{"type": "enabledWhen", "field": "namesGate", "when": {"op": "fieldInCond", "field": "raw", "condition": "names"}},
+		{"type": "enabledWhen", "field": "scoresGate", "when": {"op": "fieldInCond", "field": "raw", "condition": "scores"}},
+		{"type": "enabledWhen", "field": "containsGate", "when": {"op": "contains", "field": "raw", "value": "a"}}]}`
+
+// TestGenerateAnyFieldTruthyAndFalsyGates pins truthy and falsy to JavaScript
+// truthiness: 0, "" and null are falsy, and true and objects are truthy.
+func TestGenerateAnyFieldTruthyAndFalsyGates(t *testing.T) {
+	source, err := Generate([]byte(membershipAnyTruthySchema), Config{PkgName: "membership", SchemaName: "Membership"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	membershipAssertAnyFieldType(t, source, "Raw")
+
+	cases := []profileConformanceFixtureCase{
+		{ID: "zero", Values: json.RawMessage(`{"raw":0}`)},
+		{ID: "empty-string", Values: json.RawMessage(`{"raw":""}`)},
+		{ID: "true", Values: json.RawMessage(`{"raw":true}`)},
+		{ID: "null", Values: json.RawMessage(`{"raw":null}`)},
+		{ID: "absent", Values: json.RawMessage(`{}`)},
+		{ID: "object", Values: json.RawMessage(`{"raw":{"a":1}}`)},
+	}
+	want := []map[string]bool{
+		{"TruthyGate": false, "FalsyGate": true},
+		{"TruthyGate": false, "FalsyGate": true},
+		{"TruthyGate": true, "FalsyGate": false},
+		{"TruthyGate": false, "FalsyGate": true},
+		{"TruthyGate": false, "FalsyGate": true},
+		{"TruthyGate": true, "FalsyGate": false},
+	}
+
+	membershipAssertGates(t, cases, membershipRunAvailability(t, source, "Membership", cases), want)
+}
+
+// TestGenerateAnyFieldGtGate covers gt against a value that is not a number, a
+// number that ties the bound, and a number string no numeric op reads.
+func TestGenerateAnyFieldGtGate(t *testing.T) {
+	source, err := Generate([]byte(membershipAnyGtSchema), Config{PkgName: "membership", SchemaName: "Membership"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	membershipAssertAnyFieldType(t, source, "Raw")
+
+	cases := []profileConformanceFixtureCase{
+		{ID: "above-bound", Values: json.RawMessage(`{"raw":7}`)},
+		{ID: "below-bound", Values: json.RawMessage(`{"raw":3}`)},
+		{ID: "equal-bound", Values: json.RawMessage(`{"raw":5.0}`)},
+		{ID: "numeric-string", Values: json.RawMessage(`{"raw":"7"}`)},
+	}
+	want := []map[string]bool{
+		{"GtGate": true},
+		{"GtGate": false},
+		{"GtGate": false},
+		{"GtGate": false},
+	}
+
+	membershipAssertGates(t, cases, membershipRunAvailability(t, source, "Membership", cases), want)
+}
+
+// TestGenerateAnyFieldInCondGate matches a value of any type against a
+// string[] and a number[] condition, so only the values the elements can equal
+// ever match.
+func TestGenerateAnyFieldInCondGate(t *testing.T) {
+	source, err := Generate([]byte(membershipAnyFieldInCondSchema), Config{PkgName: "membership", SchemaName: "Membership"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	membershipAssertAnyFieldType(t, source, "Raw")
+
+	conditions := json.RawMessage(`{"names":["a","b"],"scores":[2.5,7]}`)
+	cases := []profileConformanceFixtureCase{
+		{ID: "string-in-strings", Values: json.RawMessage(`{"raw":"b"}`), Conditions: conditions},
+		{ID: "string-outside-strings", Values: json.RawMessage(`{"raw":"z"}`), Conditions: conditions},
+		{ID: "number-in-numbers", Values: json.RawMessage(`{"raw":2.5}`), Conditions: conditions},
+		{ID: "number-outside-numbers", Values: json.RawMessage(`{"raw":9}`), Conditions: conditions},
+	}
+	want := []map[string]bool{
+		{"NamesGate": true, "ScoresGate": false},
+		{"NamesGate": false},
+		{"NamesGate": false, "ScoresGate": true},
+		{"ScoresGate": false},
+	}
+
+	membershipAssertGates(t, cases, membershipRunAvailability(t, source, "Membership", cases), want)
+}
+
+// membershipAssertAnyFieldType keeps the any-typed runtime tests honest: they
+// only reach the paths they name while the field still resolves to Go's any.
+func membershipAssertAnyFieldType(t *testing.T, source, fieldName string) {
+	t.Helper()
+	if !strings.Contains(source, fieldName+" any") {
+		t.Fatalf("%s is not typed any, so this test never reaches the any-typed path:\n%s", fieldName, source)
+	}
+}
+
+// membershipAssertGates compares each case's availability against the enabled
+// flag of every gate it names.
+func membershipAssertGates(t *testing.T, cases []profileConformanceFixtureCase, results []json.RawMessage, want []map[string]bool) {
+	t.Helper()
+	if len(results) != len(want) {
+		t.Fatalf("runner returned %d results, want %d", len(results), len(want))
+	}
+	for i, result := range results {
+		var availability map[string]struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(result, &availability); err != nil {
+			t.Fatalf("%s: decode availability: %v\n%s", cases[i].ID, err, result)
+		}
+		for gate, enabled := range want[i] {
+			if availability[gate].Enabled != enabled {
+				t.Errorf("%s: %s.enabled = %v, want %v", cases[i].ID, gate, availability[gate].Enabled, enabled)
+			}
+		}
+	}
+}
+
+// membershipRunAvailability compiles the availability-only output of Generate,
+// which carries no value-schema types to validate or decode, and calls Check for
+// every case. Values decode straight into the generated fields struct, so the
+// any-typed field holds whatever encoding/json produces for the JSON value.
+func membershipRunAvailability(t *testing.T, source, schemaName string, cases []profileConformanceFixtureCase) []json.RawMessage {
+	t.Helper()
+	dir := t.TempDir()
+	pkgDir := filepath.Join(dir, "generated")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("create generated package: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "generated.go"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write generated source: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "go.mod"), []byte("module generated\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("write generated go.mod: %v", err)
+	}
+
+	var requests strings.Builder
+	for _, tc := range cases {
+		if len(tc.Values) == 0 {
+			t.Fatalf("case %q has no values", tc.ID)
+		}
+		conditions := tc.Conditions
+		if len(conditions) == 0 {
+			conditions = json.RawMessage("null")
+		}
+		fmt.Fprintf(&requests, "{values: json.RawMessage(%q), conditions: json.RawMessage(%q)},\n", string(tc.Values), string(conditions))
+	}
+
+	mainSource := fmt.Sprintf(`package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	generated "generated"
+)
+
+type request struct {
+	values json.RawMessage
+	conditions json.RawMessage
+}
+
+func main() {
+	requests := []request{
+%s	}
+	results := make([]json.RawMessage, 0, len(requests))
+	for _, request := range requests {
+		var fields generated.%sFields
+		if err := json.Unmarshal(request.values, &fields); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		var conditions generated.%sConditions
+		if err := json.Unmarshal(request.conditions, &conditions); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		availability, err := json.Marshal(generated.Check(fields, conditions, generated.%sFields{}))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		results = append(results, availability)
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(results); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+`, requests.String(), schemaName, schemaName, schemaName)
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainSource), 0o644); err != nil {
+		t.Fatalf("write generated runner: %v", err)
+	}
+	goMod := "module membershipavailability\n\ngo 1.22\n\nrequire generated v0.0.0\nreplace generated => ./generated\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
+		t.Fatalf("write runner go.mod: %v", err)
+	}
+
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GOTOOLCHAIN=local",
+		"GOCACHE="+filepath.Join(dir, ".gocache"),
+		"GOMODCACHE="+filepath.Join(dir, ".gomodcache"),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated membership runner failed: %v\n%s\n--- source ---\n%s", err, output, source)
+	}
+	var results []json.RawMessage
+	if err := json.Unmarshal(output, &results); err != nil {
+		t.Fatalf("decode generated runner output: %v\noutput: %s", err, output)
+	}
+	return results
 }
 
 func TestGenerateComposedRejectsInOnDeclaredArrayField(t *testing.T) {
