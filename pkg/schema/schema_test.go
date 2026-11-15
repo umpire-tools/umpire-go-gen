@@ -199,6 +199,18 @@ func TestParseRejectsV1Failures(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUnknownReferencesInNestedExpressions(t *testing.T) {
+	head := `{"version":1,"fields":{"email":{}},"conditions":{"sso":{"type":"boolean"}},"rules":[`
+	for _, test := range []struct{ name, rule, want string }{
+		{"requires dependency", `{"type":"requires","field":"email","dependencies":[{"op":"contains","field":"missing","value":"a"}]}`, `Unknown field "missing"`},
+		{"anyOf rule", `{"type":"anyOf","rules":[{"type":"enabledWhen","field":"email","when":{"op":"contains","field":"missing","value":"a"}}]}`, `Unknown field "missing"`},
+		{"eitherOf branch", `{"type":"eitherOf","group":"g","branches":{"a":[{"type":"enabledWhen","field":"email","when":{"op":"not","expr":{"op":"eq","field":"missing","value":1}}}]}}`, `Unknown field "missing"`},
+		{"eitherOf branch condition", `{"type":"eitherOf","group":"g","branches":{"a":[{"type":"enabledWhen","field":"email","when":{"op":"cond","condition":"missing"}}]}}`, `Unknown condition "missing"`},
+	} {
+		t.Run(test.name, func(t *testing.T) { assertParseError(t, head+test.rule+`]}`, test.want) })
+	}
+}
+
 func TestParseAcceptsEmptyExpressionCombinators(t *testing.T) {
 	for _, op := range []string{"and", "or"} {
 		t.Run(op, func(t *testing.T) {

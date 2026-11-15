@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"regexp"
+	"sort"
 )
 
 // Schema is the root structure of a .umpire.json file.
@@ -159,6 +160,19 @@ func (s *Schema) Validate() error {
 			if err := validateExprRefs(r.Check, fieldNames, conditionNames, conditionTypes); err != nil {
 				return err
 			}
+		}
+	}
+	branches := make([]string, 0, len(s.BranchExpressions))
+	for name := range s.BranchExpressions {
+		branches = append(branches, name)
+	}
+	sort.Strings(branches)
+	for _, name := range branches {
+		if err := validateExprRefs(s.BranchExpressions[name], fieldNames, conditionNames, conditionTypes); err != nil {
+			return err
+		}
+		if err := validateRegexPatterns(s.BranchExpressions[name]); err != nil {
+			return err
 		}
 	}
 
