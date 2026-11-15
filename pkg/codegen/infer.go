@@ -299,6 +299,10 @@ func holdsJSONValue(s *schema.Schema, uses []*schema.Expr, t GoType) bool {
 					return true
 				}
 			}
+		case "eq", "neq":
+			if !typeHolds(t, e.Value) {
+				return true
+			}
 		}
 	}
 	return false

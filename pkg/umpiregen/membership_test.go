@@ -109,6 +109,56 @@ func TestGenerateFieldInCondElementTypesCompile(t *testing.T) {
 	}
 }
 
+// eq and neq literals of different JSON types force a field to hold any JSON
+// value, or the comparison against the inferred Go type does not compile.
+func TestGenerateEqNeqMixedLiteralsCompile(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+	}{
+		{
+			name: "number then string",
+			schema: `{"version": 1,
+				"fields": {"raw": {}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "and", "exprs": [
+					{"op": "eq", "field": "raw", "value": 3},
+					{"op": "eq", "field": "raw", "value": "a"}]}}]}`,
+		},
+		{
+			name: "number then boolean under neq",
+			schema: `{"version": 1,
+				"fields": {"raw": {}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "and", "exprs": [
+					{"op": "eq", "field": "raw", "value": 3},
+					{"op": "neq", "field": "raw", "value": true}]}}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source, err := Generate([]byte(tt.schema), Config{PkgName: "membership", SchemaName: "Membership"})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			testutil.AssertGeneratedPackageCompiles(t, source)
+		})
+	}
+}
+
+// A field used only inside an anyOf branch expression still has to be typed from
+// that comparison, not from the *string default.
+func TestGenerateBranchOnlyFieldUsageCompiles(t *testing.T) {
+	schema := `{"version": 1,
+		"fields": {"kind": {}, "inning": {}, "gate": {}},
+		"rules": [{"type": "anyOf", "rules": [
+			{"type": "enabledWhen", "field": "kind", "when": {"op": "eq", "field": "inning", "value": 9}},
+			{"type": "enabledWhen", "field": "kind", "when": {"op": "present", "field": "gate"}}]}]}`
+	source, err := Generate([]byte(schema), Config{PkgName: "membership", SchemaName: "Membership"})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	testutil.AssertGeneratedPackageCompiles(t, source)
+}
+
 func TestGenerateRejectsValidationOnFieldHoldingAnyJSONValue(t *testing.T) {
 	tests := []struct {
 		name   string
