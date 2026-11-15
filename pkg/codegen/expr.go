@@ -293,7 +293,7 @@ func (c *ExprCompiler) compilePresent(e *schema.Expr) string {
 		return fmt.Sprintf("f.%s != \"\"", fieldName)
 	}
 	// For slice/map fields, present means non-empty
-	if goType == GoStringSlice || goType == GoFloat64Slice || goType == GoMap {
+	if c.isArrayField(e.Field) || goType == GoMap {
 		return fmt.Sprintf("len(f.%s) > 0", fieldName)
 	}
 	// Non-pointer bool/int/float are always "present" in Go; return true.
@@ -312,7 +312,7 @@ func (c *ExprCompiler) compileAbsent(e *schema.Expr) string {
 		return fmt.Sprintf("f.%s == \"\"", fieldName)
 	}
 	// For slice/map fields, absent means empty
-	if goType == GoStringSlice || goType == GoFloat64Slice || goType == GoMap {
+	if c.isArrayField(e.Field) || goType == GoMap {
 		return fmt.Sprintf("len(f.%s) == 0", fieldName)
 	}
 	// Non-pointer bool/int/float can never be absent; return false.
