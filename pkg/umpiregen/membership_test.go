@@ -157,6 +157,9 @@ func TestGenerateBranchOnlyFieldUsageCompiles(t *testing.T) {
 		t.Fatalf("Generate: %v", err)
 	}
 	testutil.AssertGeneratedPackageCompiles(t, source)
+	if !strings.Contains(source, "Inning *float64") {
+		t.Errorf("Inning is not typed from its branch-only comparison:\n%s", source)
+	}
 }
 
 func TestGenerateRejectsValidationOnFieldHoldingAnyJSONValue(t *testing.T) {

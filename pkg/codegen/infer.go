@@ -113,7 +113,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 			ti.GoType = checkType
 		} else {
 			// Infer from expression usage, default to *string if ambiguous
-			ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
+			ti.GoType = inferFieldTypeFromUsage(f.Name, s, uses)
 			if holdsJSONValue(s, uses, ti.GoType) {
 				ti.GoType = GoAny
 			}
@@ -340,7 +340,7 @@ func typeHolds(t GoType, v any) bool {
 
 // inferFieldTypeFromUsage tries to determine a field's type by scanning all expressions
 // that reference it. Returns *string as the default fallback.
-func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[string]bool) GoType {
+func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, uses []*schema.Expr) GoType {
 	// Look at all rules and their expressions for this field
 	for _, rule := range s.Rules {
 		if rule.Field == fieldName {
@@ -392,6 +392,14 @@ func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[s
 					return GoTypeForField(t, true)
 				}
 			}
+		}
+	}
+
+	// uses also covers anyOf/eitherOf branch expressions, which the rule walk
+	// above does not reach.
+	for _, e := range uses {
+		if t := peekFieldType(e); t != "" {
+			return GoTypeForField(t, true)
 		}
 	}
 
