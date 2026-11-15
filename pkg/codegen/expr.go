@@ -115,7 +115,8 @@ func (c *ExprCompiler) compileExpr(e *schema.Expr) string {
 	case "minLength", "maxLength", "matches", "url", "integer", "max", "min", "range":
 		return c.compileCheck(e)
 	case "fieldInCond":
-		// fieldInCond checks if a field value is in an array condition
+		// fieldInCond looks for the field's value among a condition's elements,
+		// so a field type that cannot equal an element never matches
 		condName := GoFieldName(e.Condition)
 		fieldName := c.GoFieldNameSafe(e.Field)
 		goType := c.fieldTypes[e.Field]
@@ -128,6 +129,9 @@ func (c *ExprCompiler) compileExpr(e *schema.Expr) string {
 				return "false"
 			}
 			return fmt.Sprintf("func() bool { v, ok := f.%s.(%s); return ok && contains(c.%s, v) }()", fieldName, elem[2:], condName)
+		}
+		if !conditionHoldsField(c.condTypes[e.Condition], c.semanticType(e.Field)) {
+			return "false"
 		}
 		if goType.Nullable() {
 			return fmt.Sprintf("f.%s != nil && contains(c.%s, *f.%s)", fieldName, condName, fieldName)
@@ -533,6 +537,25 @@ func (c *ExprCompiler) compileFieldOp(e *schema.Expr, op string) string {
 
 	val := formatValue(e.Value)
 	return fmt.Sprintf("f.%s %s %s", fieldName, op, val)
+}
+
+// conditionElem returns the Go type of a condition's array elements, or "" when
+// the condition does not hold a string or number array.
+func conditionElem(condType GoType) GoType {
+	switch condType {
+	case GoStringSlice:
+		return GoString
+	case GoFloat64Slice:
+		return GoFloat64
+	}
+	return ""
+}
+
+// conditionHoldsField reports whether a condition's elements can equal a value of
+// the field's Go type.
+func conditionHoldsField(condType, fieldType GoType) bool {
+	elem := conditionElem(condType)
+	return elem != "" && elem == fieldType.Base()
 }
 
 // formatValue formats a JSON value into a Go literal string.

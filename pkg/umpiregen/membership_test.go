@@ -69,6 +69,46 @@ func TestGenerateMembershipCompiles(t *testing.T) {
 	}
 }
 
+// fieldInCond compares a field with a condition's elements, so the field's Go
+// type has to match the condition's element type for contains to compile.
+func TestGenerateFieldInCondElementTypesCompile(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+	}{
+		{
+			name: "number field against a string condition",
+			schema: `{"version": 1,
+				"conditions": {"names": {"type": "string[]"}},
+				"fields": {"count": {"isEmpty": "number"}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "fieldInCond", "field": "count", "condition": "names"}}]}`,
+		},
+		{
+			name: "boolean field against a number condition",
+			schema: `{"version": 1,
+				"conditions": {"scores": {"type": "number[]"}},
+				"fields": {"flag": {"isEmpty": "boolean"}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "fieldInCond", "field": "flag", "condition": "scores"}}]}`,
+		},
+		{
+			name: "untyped field against a number condition",
+			schema: `{"version": 1,
+				"conditions": {"scores": {"type": "number[]"}},
+				"fields": {"raw": {}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "fieldInCond", "field": "raw", "condition": "scores"}}]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source, err := Generate([]byte(tt.schema), Config{PkgName: "membership", SchemaName: "Membership"})
+			if err != nil {
+				t.Fatalf("Generate: %v", err)
+			}
+			testutil.AssertGeneratedPackageCompiles(t, source)
+		})
+	}
+}
+
 func TestGenerateRejectsValidationOnFieldHoldingAnyJSONValue(t *testing.T) {
 	tests := []struct {
 		name   string

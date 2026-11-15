@@ -104,7 +104,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		} else if f.IsEmpty != "" {
 			// Use isEmpty to infer the type
 			ti.GoType = GoTypeForField(GoTypeName(f.IsEmpty), true)
-			if f.IsEmpty == "present" && holdsJSONValue(uses, ti.GoType) {
+			if f.IsEmpty == "present" && holdsJSONValue(s, uses, ti.GoType) {
 				ti.GoType = GoAny
 			}
 		} else if validatorType, ok := inferNamedValidatorType(f.Name, s); ok {
@@ -114,7 +114,7 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 		} else {
 			// Infer from expression usage, default to *string if ambiguous
 			ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
-			if holdsJSONValue(uses, ti.GoType) {
+			if holdsJSONValue(s, uses, ti.GoType) {
 				ti.GoType = GoAny
 			}
 		}
@@ -280,13 +280,18 @@ func arrayFieldType(uses []*schema.Expr) GoType {
 
 // holdsJSONValue reports whether a field without a declared array or scalar
 // isEmpty needs GoAny: contains reads it as an array while other ops may read
-// it as a scalar, or in/notIn compares it with a value of another JSON type
-// than its inferred Go type.
-func holdsJSONValue(uses []*schema.Expr, t GoType) bool {
+// it as a scalar, fieldInCond compares it with a condition whose elements are
+// of another Go type, or a comparison holds a value of another JSON type than
+// its inferred Go type.
+func holdsJSONValue(s *schema.Schema, uses []*schema.Expr, t GoType) bool {
 	for _, e := range uses {
 		switch e.Op {
 		case "contains":
 			return true
+		case "fieldInCond":
+			if elem := conditionFieldElem(s, e.Condition); elem != "" && elem != t.Base() {
+				return true
+			}
 		case "in", "notIn":
 			values, _ := e.Value.([]any)
 			for _, v := range values {
@@ -297,6 +302,18 @@ func holdsJSONValue(uses []*schema.Expr, t GoType) bool {
 		}
 	}
 	return false
+}
+
+// conditionFieldElem returns the Go element type of the array condition that
+// name refers to, or "" when the schema does not declare it as an array of
+// strings or numbers.
+func conditionFieldElem(s *schema.Schema, name string) GoType {
+	for i := range s.Conditions {
+		if s.Conditions[i].Name == name {
+			return conditionElem(GoTypeName(s.Conditions[i].Type))
+		}
+	}
+	return ""
 }
 
 // typeHolds reports whether a value of Go type t can equal the JSON primitive v.
