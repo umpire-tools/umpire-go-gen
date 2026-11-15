@@ -108,7 +108,7 @@ A field with no `isEmpty`, or `"isEmpty": "present"`, can hold any JSON value. I
 Place this in the consuming package (for example, in `checkout.go`):
 
 ```go
-//go:generate go run github.com/umpire-tools/umpire-go-gen@v0.2.0 -i ../../schemas/checkout.umpire.json -output-file checkout_gen.go -pkg availability
+//go:generate go run github.com/umpire-tools/umpire-go-gen@v0.3.0 -i ../../schemas/checkout.umpire.json -output-file checkout_gen.go -pkg availability
 ```
 
 Then run `go generate ./...` to regenerate.
