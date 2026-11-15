@@ -67,9 +67,11 @@ func (g *ChallengeGenerator) genRuleMetaTable() string {
 			b.WriteString(fmt.Sprintf("{Field: %q, RuleType: %q, Expr: \"\", Reason: %q},\n",
 				req.Field, "requires", req.Reason))
 		}
-		if fd.Fair.Expr != "" {
-			b.WriteString(fmt.Sprintf("{Field: %q, RuleType: %q, Expr: %q, Reason: %q},\n",
-				fd.Fair.Field, "fairWhen", fd.Fair.Expr, fd.Fair.Reason))
+		for _, fair := range fd.Fairs {
+			if fair.Expr != "" {
+				b.WriteString(fmt.Sprintf("{Field: %q, RuleType: %q, Expr: %q, Reason: %q},\n",
+					fair.Field, "fairWhen", fair.Expr, fair.Reason))
+			}
 		}
 		if fd.Check.Expr != "" {
 			b.WriteString(fmt.Sprintf("{Field: %q, RuleType: %q, Expr: %q, Reason: %q},\n",
@@ -140,9 +142,12 @@ func (g *ChallengeGenerator) genChallengeFunc() string {
 					b.WriteString(")\n")
 				}
 			}
-			if fd.Fair.Expr != "" && fd.Fair.Reason != "" {
+			for _, fair := range fd.Fairs {
+				if fair.Expr == "" || fair.Reason == "" {
+					continue
+				}
 				b.WriteString("\t\texplanations = append(explanations, ")
-				b.WriteString(q(fmt.Sprintf("* fairWhen: %s", fd.Fair.Reason)))
+				b.WriteString(q(fmt.Sprintf("* fairWhen: %s", fair.Reason)))
 				b.WriteString(")\n")
 			}
 			if fd.Check.Expr != "" && fd.Check.Reason != "" {

@@ -50,7 +50,7 @@ type FieldRuleData struct {
 	Enabled    RuleContribution
 	Disabled   RuleContribution
 	Requires   []RuleContribution
-	Fair       RuleContribution
+	Fairs      []RuleContribution
 	Check      RuleContribution
 	Validator  *ValidatorRule
 	IsEitherOf bool // true if this field's enabledWhen comes from an eitherOf
@@ -192,12 +192,12 @@ func (rc *RuleCompiler) CompileRules(rules []schema.Rule) map[string]*FieldRuleD
 			if rule.FairWhen != nil {
 				compiled, err := comp.Compile(rule.FairWhen)
 				if err == nil {
-					fd.Fair = RuleContribution{
+					fd.Fairs = append(fd.Fairs, RuleContribution{
 						RuleType: "fairWhen",
 						Field:    gn,
 						Expr:     compiled,
 						Reason:   rule.Reason,
-					}
+					})
 				}
 			}
 		case "check":
