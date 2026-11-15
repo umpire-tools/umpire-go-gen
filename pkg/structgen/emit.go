@@ -136,8 +136,9 @@ func RootGoTypes(spec *Spec) map[string]string {
 }
 
 // RootUnderlyingGoTypes maps root enum fields to the scalar type used for
-// availability emptiness semantics. Ordinary scalar overrides already carry
-// their own semantics; only named enum types need this side channel.
+// availability semantics, and root array fields to a slice of their element's
+// scalar type when the element is a scalar or enum. Ordinary scalar overrides
+// already carry their own semantics; only named types need this side channel.
 func RootUnderlyingGoTypes(spec *Spec) map[string]string {
 	out := make(map[string]string)
 	for _, f := range spec.Root {
@@ -147,8 +148,12 @@ func RootUnderlyingGoTypes(spec *Spec) map[string]string {
 				out[f.Name] = scalarGoType(f.Type.Scalar)
 			}
 		case KindArray:
-			if f.Type.Elem != nil {
-				out[f.Name] = "[]" + baseGoType(*f.Type.Elem)
+			if elem := f.Type.Elem; elem != nil {
+				if elem.Kind == KindScalar || elem.Kind == KindEnum {
+					out[f.Name] = "[]" + scalarGoType(elem.Scalar)
+				} else {
+					out[f.Name] = "[]" + baseGoType(*elem)
+				}
 			}
 		}
 	}

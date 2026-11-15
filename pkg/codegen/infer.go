@@ -1,6 +1,8 @@
 package codegen
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -93,17 +95,35 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 			JSONTag: f.Name,
 		}
 
+		uses := fieldUses(s, f.Name)
 		// Use explicit type hint if present
 		if f.TypeHint != "" {
 			ti.GoType = GoTypeName(f.TypeHint)
+		} else if f.IsEmpty == "array" {
+			ti.GoType = arrayFieldType(uses)
 		} else if f.IsEmpty != "" {
 			// Use isEmpty to infer the type
 			ti.GoType = GoTypeForField(GoTypeName(f.IsEmpty), true)
+			if f.IsEmpty == "present" && holdsJSONValue(uses, ti.GoType) {
+				ti.GoType = GoAny
+			}
 		} else if validatorType, ok := inferNamedValidatorType(f.Name, s); ok {
 			ti.GoType = validatorType
+		} else if checkType, ok := inferCheckRuleType(f.Name, s); ok {
+			ti.GoType = checkType
 		} else {
 			// Infer from expression usage, default to *string if ambiguous
 			ti.GoType = inferFieldTypeFromUsage(f.Name, s, fieldNames)
+			if holdsJSONValue(uses, ti.GoType) {
+				ti.GoType = GoAny
+			}
+		}
+		if ti.GoType == GoAny {
+			for _, e := range uses {
+				if !anyFieldOps[e.Op] {
+					return nil, fmt.Errorf("field %q can hold any JSON value, so %q cannot be generated for it; declare its isEmpty", f.Name, e.Op)
+				}
+			}
 		}
 
 		inferred.Fields = append(inferred.Fields, ti)
@@ -158,10 +178,8 @@ func inferNamedValidatorType(fieldName string, s *schema.Schema) (GoType, bool) 
 	}
 }
 
-// inferFieldTypeFromUsage tries to determine a field's type by scanning all expressions
-// that reference it. Returns *string as the default fallback.
-func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[string]bool) GoType {
-	// First, check check rules to infer type from validation operator
+// inferCheckRuleType types a field from the validation operator of a check rule.
+func inferCheckRuleType(fieldName string, s *schema.Schema) (GoType, bool) {
 	for _, rule := range s.Rules {
 		if rule.Type == "check" && rule.Field == fieldName && rule.Check != nil {
 			checkOp := rule.Check.Op
@@ -170,13 +188,126 @@ func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[s
 			}
 			switch checkOp {
 			case "minLength", "maxLength":
-				return GoStringSlice // arrays
+				return GoStringSlice, true // arrays
 			case "min", "max", "range", "integer":
-				return GoFloat64Ptr // numbers
+				return GoFloat64Ptr, true // numbers
 			}
 		}
 	}
+	return "", false
+}
 
+// anyFieldOps lists the expression ops that compile against a GoAny field.
+var anyFieldOps = map[string]bool{
+	"eq": true, "neq": true, "gt": true, "gte": true, "lt": true, "lte": true,
+	"in": true, "notIn": true, "contains": true, "fieldInCond": true,
+	"present": true, "absent": true, "truthy": true, "falsy": true,
+}
+
+// fieldUses returns every expression node that targets the field, from rule
+// expressions and anyOf/eitherOf branch expressions.
+func fieldUses(s *schema.Schema, fieldName string) []*schema.Expr {
+	var uses []*schema.Expr
+	var walk func(e *schema.Expr)
+	walk = func(e *schema.Expr) {
+		if e == nil {
+			return
+		}
+		if e.Field == fieldName {
+			uses = append(uses, e)
+		}
+		for i := range e.Exprs {
+			walk(&e.Exprs[i])
+		}
+	}
+	for i := range s.Rules {
+		walk(s.Rules[i].Expr)
+		walk(s.Rules[i].DisabledWhen)
+		walk(s.Rules[i].FairWhen)
+		walk(s.Rules[i].Check)
+	}
+	branches := make([]string, 0, len(s.BranchExpressions))
+	for name := range s.BranchExpressions {
+		branches = append(branches, name)
+	}
+	sort.Strings(branches)
+	for _, name := range branches {
+		walk(s.BranchExpressions[name])
+	}
+	return uses
+}
+
+// arrayFieldType types an "isEmpty": "array" field from the values contains
+// looks for in it: []string or []float64 when every value has that type, and
+// []any when the values mix types or include a boolean or null.
+func arrayFieldType(uses []*schema.Expr) GoType {
+	var elem GoType
+	for _, e := range uses {
+		if e.Op != "contains" {
+			continue
+		}
+		var t GoType
+		switch e.Value.(type) {
+		case string:
+			t = GoString
+		case float64:
+			t = GoFloat64
+		default:
+			return GoAnySlice
+		}
+		if elem != "" && elem != t {
+			return GoAnySlice
+		}
+		elem = t
+	}
+	if elem == GoFloat64 {
+		return GoFloat64Slice
+	}
+	return GoStringSlice
+}
+
+// holdsJSONValue reports whether a field without a declared array or scalar
+// isEmpty needs GoAny: contains reads it as an array while other ops may read
+// it as a scalar, or in/notIn compares it with a value of another JSON type
+// than its inferred Go type.
+func holdsJSONValue(uses []*schema.Expr, t GoType) bool {
+	for _, e := range uses {
+		switch e.Op {
+		case "contains":
+			return true
+		case "in", "notIn":
+			values, _ := e.Value.([]any)
+			for _, v := range values {
+				if !typeHolds(t, v) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// typeHolds reports whether a value of Go type t can equal the JSON primitive v.
+func typeHolds(t GoType, v any) bool {
+	switch v := v.(type) {
+	case string:
+		return t.Base() == GoString
+	case bool:
+		return t.Base() == GoBool
+	case float64:
+		switch t.Base() {
+		case GoFloat64, "float32":
+			return true
+		case GoInt, "int64", "int32":
+			return v == float64(int64(v))
+		}
+	}
+	return false
+}
+
+// inferFieldTypeFromUsage tries to determine a field's type by scanning all expressions
+// that reference it. Returns *string as the default fallback.
+func inferFieldTypeFromUsage(fieldName string, s *schema.Schema, fieldRefs map[string]bool) GoType {
 	// Look at all rules and their expressions for this field
 	for _, rule := range s.Rules {
 		if rule.Field == fieldName {
@@ -243,13 +374,7 @@ func peekFieldType(e *schema.Expr) GoType {
 
 	// If this expression compares a field to a value, infer from the value type
 	if e.Field != "" && e.Value != nil && isComparisonOp(e.Op) {
-		t := GoTypeFromJSONValue(e.Value)
-		// For "in" / "notIn", the value is a slice but the field is a single element.
-		// Return the element type instead of the slice type.
-		if e.Op == "in" || e.Op == "notIn" {
-			t = t.Base()
-		}
-		return t
+		return GoTypeFromJSONValue(e.Value)
 	}
 
 	// Recurse into nested expressions

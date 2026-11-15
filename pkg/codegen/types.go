@@ -16,7 +16,10 @@ const (
 	GoFloat64Ptr   GoType = "*float64"
 	GoStringSlice  GoType = "[]string"
 	GoFloat64Slice GoType = "[]float64"
+	GoAnySlice     GoType = "[]any"
 	GoMap          GoType = "map[string]any"
+	// GoAny holds a field whose value may be any JSON value at runtime.
+	GoAny GoType = "any"
 )
 
 // Nullable reports whether this GoType is a pointer type. Named structural pointer

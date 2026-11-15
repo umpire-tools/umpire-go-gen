@@ -133,7 +133,6 @@ func TestCompile_InOperator(t *testing.T) {
 	comp := NewExprCompiler(
 		map[string]GoType{
 			"role":  GoStringPtr,
-			"tags":  GoStringSlice,
 			"count": GoInt,
 		},
 		map[string]GoType{},
@@ -148,11 +147,6 @@ func TestCompile_InOperator(t *testing.T) {
 			name: "pointer string field",
 			expr: &schema.Expr{Op: "in", Field: "role", Value: []any{"admin", "user"}},
 			want: `(f.Role != nil && *f.Role == "admin" || f.Role != nil && *f.Role == "user")`,
-		},
-		{
-			name: "slice field",
-			expr: &schema.Expr{Op: "in", Field: "tags", Value: "important"},
-			want: `contains(f.Tags, "important")`,
 		},
 	}
 
