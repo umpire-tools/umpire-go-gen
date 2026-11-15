@@ -294,6 +294,16 @@
         {
           "type": "object",
           "properties": {
+            "op": { "const": "contains" },
+            "field": { "type": "string" },
+            "value": { "$ref": "#/definitions/json-primitive" }
+          },
+          "required": ["op", "field", "value"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
             "op": { "const": "cond" },
             "condition": { "type": "string" }
           },

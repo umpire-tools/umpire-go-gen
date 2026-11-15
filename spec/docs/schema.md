@@ -81,6 +81,21 @@ The `op` field discriminates between expression variants.
 |------|-----------|-------------|
 | `in` | `field`, `values` | Field value is in the list |
 | `notIn` | `field`, `values` | Field value is not in the list |
+| `contains` | `field`, `value` | Array-valued field holds the value |
+
+`in` and `notIn` compare a scalar field value against a list of primitives. They do not look inside an array value. `fieldInCond` does the same against a named array condition. `contains` is the reverse: the field holds an array, and `value` is one primitive to find in it.
+
+| Situation | Result |
+|-----------|--------|
+| `in`, `notIn`, or `fieldInCond` targets a field declared `"isEmpty": "array"` | Definition error: `"in" requires a scalar field` (or `"notIn"`, `"fieldInCond"`) |
+| `contains` targets a field declared `"isEmpty"` as `"string"`, `"number"`, `"boolean"`, or `"object"` | Definition error: `"contains" requires an array field` |
+| `contains` evaluates a value that is not an array (absent, `null`, a scalar, or an object) | `false` |
+| `contains` evaluates an array | `true` when an element equals `value` |
+| `in` or `fieldInCond` evaluates an array value on a field not declared `"isEmpty": "array"` | `false`; `notIn` is `true` |
+
+Every membership op compares with JSON equality and no type coercion: `22` does not equal `"22"`, and `true` does not equal `1`. Numbers compare by value, so `22` equals `22.0`. Fields with `"isEmpty": "present"` or no `isEmpty` can be the target of any membership op.
+
+A definition error is raised when the schema is validated, before any evaluation. It applies to every expression position at any depth: `enabledWhen`, `fairWhen`, `disables`, and `requires` (`when` and `dependencies`), inside `and`, `or`, and `not`, and inside the rules of `anyOf` and `eitherOf` branches.
 
 ### Conditions
 
