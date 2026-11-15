@@ -69,15 +69,37 @@ func TestGenerateMembershipCompiles(t *testing.T) {
 	}
 }
 
-func TestGenerateRejectsCheckOnFieldHoldingAnyJSONValue(t *testing.T) {
-	schema := `{"version": 1,
-		"fields": {"raw": {}, "gate": {}},
-		"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "and", "exprs": [
-			{"op": "contains", "field": "raw", "value": "a"},
-			{"op": "check", "field": "raw", "check": {"op": "email"}}]}}]}`
-	_, err := Generate([]byte(schema), Config{PkgName: "membership", SchemaName: "Membership"})
-	if err == nil || !strings.Contains(err.Error(), `field "raw"`) || !strings.Contains(err.Error(), `"check"`) {
-		t.Fatalf("Generate error = %v, want a rejection naming field \"raw\" and op \"check\"", err)
+func TestGenerateRejectsValidationOnFieldHoldingAnyJSONValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+		op     string
+	}{
+		{
+			name: "check rule",
+			op:   "check",
+			schema: `{"version": 1,
+				"fields": {"raw": {}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "and", "exprs": [
+					{"op": "contains", "field": "raw", "value": "a"},
+					{"op": "check", "field": "raw", "check": {"op": "email"}}]}}]}`,
+		},
+		{
+			name: "named validator on a present field",
+			op:   "email",
+			schema: `{"version": 1,
+				"fields": {"raw": {"isEmpty": "present"}, "gate": {}},
+				"rules": [{"type": "enabledWhen", "field": "gate", "when": {"op": "contains", "field": "raw", "value": "a"}}],
+				"validators": {"raw": {"op": "email"}}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Generate([]byte(tt.schema), Config{PkgName: "membership", SchemaName: "Membership"})
+			if err == nil || !strings.Contains(err.Error(), `field "raw"`) || !strings.Contains(err.Error(), `"`+tt.op+`"`) {
+				t.Fatalf("Generate error = %v, want a rejection naming field \"raw\" and op %q", err, tt.op)
+			}
+		})
 	}
 }
 

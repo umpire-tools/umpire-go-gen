@@ -119,10 +119,8 @@ func InferTypes(s *schema.Schema) (*InferredSchema, error) {
 			}
 		}
 		if ti.GoType == GoAny {
-			for _, e := range uses {
-				if !anyFieldOps[e.Op] {
-					return nil, fmt.Errorf("field %q can hold any JSON value, so %q cannot be generated for it; declare its isEmpty", f.Name, e.Op)
-				}
+			if err := checkAnyFieldOps(s, f.Name, uses); err != nil {
+				return nil, err
 			}
 		}
 
@@ -202,6 +200,20 @@ var anyFieldOps = map[string]bool{
 	"eq": true, "neq": true, "gt": true, "gte": true, "lt": true, "lte": true,
 	"in": true, "notIn": true, "contains": true, "fieldInCond": true,
 	"present": true, "absent": true, "truthy": true, "falsy": true,
+}
+
+// checkAnyFieldOps rejects a GoAny field that an expression or a named
+// validator uses with an op that only compiles against a concrete type.
+func checkAnyFieldOps(s *schema.Schema, fieldName string, uses []*schema.Expr) error {
+	for _, e := range uses {
+		if !anyFieldOps[e.Op] {
+			return fmt.Errorf("field %q can hold any JSON value, so %q cannot be generated for it; declare its isEmpty", fieldName, e.Op)
+		}
+	}
+	if v, ok := s.Validators[fieldName]; ok {
+		return fmt.Errorf("field %q can hold any JSON value, so validator %q cannot be generated for it; declare its isEmpty", fieldName, v.Op)
+	}
+	return nil
 }
 
 // fieldUses returns every expression node that targets the field, from rule
