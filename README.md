@@ -1,6 +1,6 @@
 # umpire-go-gen
 
-Generate typed, zero-dependency Go from `.umpire.json` schemas. The output is a self-contained Go package with structs, enums, and a `Check()` function — no reflection, no `any`, no runtime map lookups.
+Generate typed, zero-dependency Go from `.umpire.json` schemas. The output is a self-contained Go package with structs, enums, and a `Check()` function — no reflection, no runtime map lookups, and no `any` unless the schema lets a field hold any JSON value (see [Field types](#field-types)).
 
 ## Quick Start
 
@@ -84,6 +84,14 @@ For a schema named `checkout.umpire.json`, the tool emits `checkout_gen.go` cont
 - `CheckoutAvailability` — one `FieldStatus` per field + `Active*Branch` fields for `oneOf`/`eitherOf` groups
 - `Check(f, c, prev)` — evaluates all rules and returns the full availability map
 - `Challenge(field, f, c, prev)` — debug helper that explains which rules affected a field
+
+The generated code uses generics and needs Go 1.20 or later.
+
+### Field types
+
+A field's `isEmpty` sets its Go type. A field declared `"isEmpty": "array"` is `[]string`, `[]float64` when every `contains` on it looks for a number, and `[]any` when the values `contains` looks for mix types or include a boolean or `null`.
+
+A field with no `isEmpty`, or `"isEmpty": "present"`, can hold any JSON value. It is typed `any` when `contains` targets it, or when `in`/`notIn` compares it with a value its inferred type cannot hold. Declare an `isEmpty` to get a concrete type instead.
 
 ## Integration Guide
 

@@ -64,6 +64,7 @@ type RuleCompiler struct {
 	fieldMap   map[string]*schema.FieldDef
 	result     map[string]*FieldRuleData
 	schema     *schema.Schema // for accessing BranchExpressions
+	underlying map[string]GoType
 }
 
 // NewRuleCompiler creates a RuleCompiler.
@@ -83,6 +84,13 @@ func NewRuleCompiler(fieldTypes, condTypes map[string]GoType, fields []schema.Fi
 // WithSchema attaches the schema to the RuleCompiler for accessing BranchExpressions.
 func (rc *RuleCompiler) WithSchema(s *schema.Schema) *RuleCompiler {
 	rc.schema = s
+	return rc
+}
+
+// WithUnderlyingTypes records the scalar/container semantics of generated named
+// field types for expression compilation.
+func (rc *RuleCompiler) WithUnderlyingTypes(underlying map[string]GoType) *RuleCompiler {
+	rc.underlying = underlying
 	return rc
 }
 
@@ -108,7 +116,7 @@ func (rc *RuleCompiler) CompileRules(rules []schema.Rule) map[string]*FieldRuleD
 		}
 	}
 
-	comp := NewExprCompiler(rc.fieldTypes, rc.condTypes)
+	comp := NewExprCompiler(rc.fieldTypes, rc.condTypes).WithUnderlyingTypes(rc.underlying)
 
 	for _, rule := range rules {
 		if rule.Excluded {

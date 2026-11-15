@@ -86,6 +86,12 @@ func (g *CheckGenerator) genHelper() string {
 		b.WriteString(q(gn))
 		b.WriteString(":\n")
 
+		if goType == GoAny {
+			b.WriteString("\t\treturn f.")
+			b.WriteString(gn)
+			b.WriteString(" != nil\n")
+			continue
+		}
 		if isPtr {
 			fd := g.fieldRuleMap[gn]
 			if fd != nil && fd.IsEmpty && strings.HasPrefix(string(base), "[]") {
@@ -513,6 +519,12 @@ func (g *CheckGenerator) emitEnabled(b *strings.Builder, fd *FieldRuleData) {
 func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, ft FieldTypeInfo, hasIsEmpty bool) {
 	goType := ft.GoType
 	base := ft.SemanticBase()
+	if goType == GoAny {
+		b.WriteString("f.")
+		b.WriteString(gn)
+		b.WriteString(" != nil")
+		return
+	}
 	if goType.Nullable() {
 		if hasIsEmpty && strings.HasPrefix(string(base), "[]") {
 			b.WriteString("func() bool { v := f.")
@@ -832,6 +844,9 @@ func (g *CheckGenerator) fieldSatisfiedExpr(goName string) string {
 	}
 	isPtr := ft.GoType.Nullable()
 	base := ft.SemanticBase()
+	if ft.GoType == GoAny {
+		return fmt.Sprintf("f.%s != nil", goName)
+	}
 	if isPtr {
 		if hasIsEmpty && strings.HasPrefix(string(base), "[]") {
 			return fmt.Sprintf("(func() bool { v := f.%s; return v != nil && len(*v) > 0 })()", goName)

@@ -13,6 +13,9 @@ type ExprCompiler struct {
 	condTypes   map[string]GoType
 	condPrefix  string // "c." for conditions
 	fieldPrefix string // "f." for fields
+	// underlying carries the primitive/container semantics of generated named
+	// field types, keyed like fieldTypes.
+	underlying map[string]GoType
 }
 
 // NewExprCompiler creates a new ExprCompiler with the given field and condition type maps.
@@ -23,6 +26,26 @@ func NewExprCompiler(fieldTypes, condTypes map[string]GoType) *ExprCompiler {
 		condPrefix:  "c.",
 		fieldPrefix: "f.",
 	}
+}
+
+// WithUnderlyingTypes records the scalar/container semantics of generated named
+// field types, such as []string for a field of type *[]Color.
+func (c *ExprCompiler) WithUnderlyingTypes(underlying map[string]GoType) *ExprCompiler {
+	c.underlying = underlying
+	return c
+}
+
+// semanticType returns the non-pointer type whose semantics a field carries.
+func (c *ExprCompiler) semanticType(field string) GoType {
+	if t, ok := c.underlying[field]; ok && t != "" {
+		return t.Base()
+	}
+	return c.fieldTypes[field].Base()
+}
+
+// isArrayField reports whether a field's Go type holds a JSON array.
+func (c *ExprCompiler) isArrayField(field string) bool {
+	return strings.HasPrefix(string(c.semanticType(field)), "[]")
 }
 
 // GoFieldNameSafe returns the Go-safe field name for a JSON field name.
@@ -61,6 +84,8 @@ func (c *ExprCompiler) compileExpr(e *schema.Expr) string {
 		return c.compileLte(e)
 	case "in":
 		return c.compileIn(e)
+	case "contains":
+		return c.compileContains(e)
 	case "present":
 		return c.compilePresent(e)
 	case "absent":
@@ -90,10 +115,24 @@ func (c *ExprCompiler) compileExpr(e *schema.Expr) string {
 	case "minLength", "maxLength", "matches", "url", "integer", "max", "min", "range":
 		return c.compileCheck(e)
 	case "fieldInCond":
-		// fieldInCond checks if a field value is in an array condition
+		// fieldInCond looks for the field's value among a condition's elements,
+		// so a field type that cannot equal an element never matches
 		condName := GoFieldName(e.Condition)
 		fieldName := c.GoFieldNameSafe(e.Field)
 		goType := c.fieldTypes[e.Field]
+		if c.isArrayField(e.Field) {
+			return "false"
+		}
+		if goType == GoAny {
+			elem := c.condTypes[e.Condition]
+			if elem != GoStringSlice && elem != GoFloat64Slice {
+				return "false"
+			}
+			return fmt.Sprintf("func() bool { v, ok := f.%s.(%s); return ok && contains(c.%s, v) }()", fieldName, elem[2:], condName)
+		}
+		if !conditionHoldsField(c.condTypes[e.Condition], c.semanticType(e.Field)) {
+			return "false"
+		}
 		if goType.Nullable() {
 			return fmt.Sprintf("f.%s != nil && contains(c.%s, *f.%s)", fieldName, condName, fieldName)
 		}
@@ -171,16 +210,86 @@ func (c *ExprCompiler) compileLte(e *schema.Expr) string {
 	return c.compileFieldOp(e, "<=")
 }
 
-// compileIn emits a field membership check (field value is in a slice).
+// compileIn emits a field membership check: the field value equals one of the values.
 func (c *ExprCompiler) compileIn(e *schema.Expr) string {
-	return c.compileFieldOp(e, "in")
+	return c.compileFieldMembership(e, false)
+}
+
+// compileFieldMembership emits in (or notIn when negate is set) for a field.
+// Membership never looks inside an array value, and a value the field's type
+// cannot hold never matches, so both reduce to constants.
+func (c *ExprCompiler) compileFieldMembership(e *schema.Expr, negate bool) string {
+	fieldName := c.GoFieldNameSafe(e.Field)
+	goType := c.fieldTypes[e.Field]
+	cmp, join, none := "==", " || ", "false"
+	if negate {
+		cmp, join, none = "!=", " && ", "true"
+	}
+	if c.isArrayField(e.Field) {
+		return none
+	}
+	values, ok := e.Value.([]any)
+	if !ok && e.Value != nil {
+		values = []any{e.Value}
+	}
+
+	var parts []string
+	for _, v := range values {
+		switch {
+		case goType == GoAny:
+			parts = append(parts, fmt.Sprintf("f.%s %s %s", fieldName, cmp, formatJSONValue(v)))
+		case !typeHolds(c.semanticType(e.Field), v):
+		case goType.Nullable() && !negate:
+			parts = append(parts, fmt.Sprintf("f.%s != nil && *f.%s == %s", fieldName, fieldName, formatValue(v)))
+		case goType.Nullable():
+			parts = append(parts, fmt.Sprintf("*f.%s != %s", fieldName, formatValue(v)))
+		default:
+			parts = append(parts, fmt.Sprintf("f.%s %s %s", fieldName, cmp, formatValue(v)))
+		}
+	}
+	if len(parts) == 0 {
+		return none
+	}
+	joined := "(" + strings.Join(parts, join) + ")"
+	if negate && goType.Nullable() {
+		return fmt.Sprintf("(f.%s == nil || %s)", fieldName, joined)
+	}
+	return joined
+}
+
+// compileContains emits a check that the field's array value holds e.Value.
+// A field whose type cannot hold an array, or whose elements cannot equal the
+// value, never matches.
+func (c *ExprCompiler) compileContains(e *schema.Expr) string {
+	fieldName := c.GoFieldNameSafe(e.Field)
+	goType := c.fieldTypes[e.Field]
+	if goType == GoAny {
+		return fmt.Sprintf("func() bool { s, ok := f.%s.([]any); return ok && contains(s, any(%s)) }()", fieldName, formatJSONValue(e.Value))
+	}
+	if !c.isArrayField(e.Field) {
+		return "false"
+	}
+	elem := c.semanticType(e.Field)[2:]
+	var needle string
+	switch {
+	case elem == "any":
+		needle = "any(" + formatJSONValue(e.Value) + ")"
+	case typeHolds(elem, e.Value):
+		needle = formatValue(e.Value)
+	default:
+		return "false"
+	}
+	if goType.Nullable() {
+		return fmt.Sprintf("f.%s != nil && contains(*f.%s, %s)", fieldName, fieldName, needle)
+	}
+	return fmt.Sprintf("contains(f.%s, %s)", fieldName, needle)
 }
 
 // compilePresent checks if a field is non-nil/non-empty.
 func (c *ExprCompiler) compilePresent(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
-	if goType.Nullable() {
+	if goType.Nullable() || goType == GoAny {
 		return fmt.Sprintf("f.%s != nil", fieldName)
 	}
 	// For string fields, present means non-empty
@@ -188,7 +297,7 @@ func (c *ExprCompiler) compilePresent(e *schema.Expr) string {
 		return fmt.Sprintf("f.%s != \"\"", fieldName)
 	}
 	// For slice/map fields, present means non-empty
-	if goType == GoStringSlice || goType == GoFloat64Slice || goType == GoMap {
+	if c.isArrayField(e.Field) || goType == GoMap {
 		return fmt.Sprintf("len(f.%s) > 0", fieldName)
 	}
 	// Non-pointer bool/int/float are always "present" in Go; return true.
@@ -199,7 +308,7 @@ func (c *ExprCompiler) compilePresent(e *schema.Expr) string {
 func (c *ExprCompiler) compileAbsent(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
-	if goType.Nullable() {
+	if goType.Nullable() || goType == GoAny {
 		return fmt.Sprintf("f.%s == nil", fieldName)
 	}
 	// For string fields, absent means empty
@@ -207,7 +316,7 @@ func (c *ExprCompiler) compileAbsent(e *schema.Expr) string {
 		return fmt.Sprintf("f.%s == \"\"", fieldName)
 	}
 	// For slice/map fields, absent means empty
-	if goType == GoStringSlice || goType == GoFloat64Slice || goType == GoMap {
+	if c.isArrayField(e.Field) || goType == GoMap {
 		return fmt.Sprintf("len(f.%s) == 0", fieldName)
 	}
 	// Non-pointer bool/int/float can never be absent; return false.
@@ -218,6 +327,9 @@ func (c *ExprCompiler) compileAbsent(e *schema.Expr) string {
 func (c *ExprCompiler) compileTruthy(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
+	if goType == GoAny {
+		return fmt.Sprintf("isTruthy(f.%s)", fieldName)
+	}
 	if goType.Nullable() {
 		switch goType.Base() {
 		case GoBool:
@@ -242,6 +354,9 @@ func (c *ExprCompiler) compileTruthy(e *schema.Expr) string {
 func (c *ExprCompiler) compileFalsy(e *schema.Expr) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
+	if goType == GoAny {
+		return fmt.Sprintf("!isTruthy(f.%s)", fieldName)
+	}
 	if goType.Nullable() {
 		switch goType.Base() {
 		case GoBool:
@@ -396,25 +511,7 @@ func (c *ExprCompiler) compileNotIn(e *schema.Expr) string {
 		}
 		return fmt.Sprintf("c.%s != %s", condName, val)
 	}
-	fieldName := c.GoFieldNameSafe(e.Field)
-	goType := c.fieldTypes[e.Field]
-	if vals, ok := e.Value.([]any); ok && len(vals) > 0 {
-		var parts []string
-		for _, v := range vals {
-			val := formatValue(v)
-			if goType.Nullable() {
-				parts = append(parts, fmt.Sprintf("*f.%s != %s", fieldName, val))
-			} else {
-				parts = append(parts, fmt.Sprintf("f.%s != %s", fieldName, val))
-			}
-		}
-		return "(" + strings.Join(parts, " && ") + ")"
-	}
-	val := formatValue(e.Value)
-	if goType.Nullable() {
-		return fmt.Sprintf("f.%s != nil && *f.%s != %s", fieldName, fieldName, val)
-	}
-	return fmt.Sprintf("f.%s != %s", fieldName, val)
+	return c.compileFieldMembership(e, true)
 }
 
 // compileFieldOp emits a field comparison: f.Field <op> value (with nil guard for pointers).
@@ -422,29 +519,15 @@ func (c *ExprCompiler) compileFieldOp(e *schema.Expr, op string) string {
 	fieldName := c.GoFieldNameSafe(e.Field)
 	goType := c.fieldTypes[e.Field]
 
-	if op == "in" {
-		// For "in" operator: check if field value equals one of the allowed values
-		if vals, ok := e.Value.([]any); ok && len(vals) > 0 {
-			var parts []string
-			for _, v := range vals {
-				val := formatValue(v)
-				if goType.Nullable() {
-					parts = append(parts, fmt.Sprintf("f.%s != nil && *f.%s == %s", fieldName, fieldName, val))
-				} else {
-					parts = append(parts, fmt.Sprintf("f.%s == %s", fieldName, val))
-				}
-			}
-			return "(" + strings.Join(parts, " || ") + ")"
+	if goType == GoAny {
+		switch op {
+		case "==":
+			return fmt.Sprintf("f.%s == %s", fieldName, formatJSONValue(e.Value))
+		case "!=":
+			return fmt.Sprintf("f.%s != nil && f.%s != %s", fieldName, fieldName, formatJSONValue(e.Value))
+		default:
+			return fmt.Sprintf("func() bool { n, ok := f.%s.(float64); return ok && n %s %s }()", fieldName, op, formatValue(e.Value))
 		}
-		val := formatValue(e.Value)
-		// For slice fields with a single value, check membership in the slice.
-		if goType == GoStringSlice || goType == GoFloat64Slice {
-			return fmt.Sprintf("contains(f.%s, %s)", fieldName, val)
-		}
-		if goType.Nullable() {
-			return fmt.Sprintf("f.%s != nil && *f.%s == %s", fieldName, fieldName, val)
-		}
-		return fmt.Sprintf("f.%s == %s", fieldName, val)
 	}
 
 	if goType.Nullable() {
@@ -454,6 +537,25 @@ func (c *ExprCompiler) compileFieldOp(e *schema.Expr, op string) string {
 
 	val := formatValue(e.Value)
 	return fmt.Sprintf("f.%s %s %s", fieldName, op, val)
+}
+
+// conditionElem returns the Go type of a condition's array elements, or "" when
+// the condition does not hold a string or number array.
+func conditionElem(condType GoType) GoType {
+	switch condType {
+	case GoStringSlice:
+		return GoString
+	case GoFloat64Slice:
+		return GoFloat64
+	}
+	return ""
+}
+
+// conditionHoldsField reports whether a condition's elements can equal a value of
+// the field's Go type.
+func conditionHoldsField(condType, fieldType GoType) bool {
+	elem := conditionElem(condType)
+	return elem != "" && elem == fieldType.Base()
 }
 
 // formatValue formats a JSON value into a Go literal string.
@@ -485,6 +587,15 @@ func formatValue(v any) string {
 	default:
 		return fmt.Sprintf("%v", val)
 	}
+}
+
+// formatJSONValue formats a JSON primitive as a Go literal whose dynamic type
+// matches encoding/json's decoding into an interface value.
+func formatJSONValue(v any) string {
+	if n, ok := v.(float64); ok {
+		return "float64(" + formatValue(n) + ")"
+	}
+	return formatValue(v)
 }
 
 // isNumericType reports whether the Go type is a numeric type.

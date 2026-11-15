@@ -119,6 +119,9 @@ func validatePublicSchema(doc map[string]json.RawMessage) error {
 	if err := validateRules(rules); err != nil {
 		return err
 	}
+	if err := validateMembershipTargets(rules, fieldDefs); err != nil {
+		return err
+	}
 	if raw, ok := doc["conditions"]; ok {
 		conditions, err := rawObject(raw, "conditions")
 		if err != nil {
@@ -557,6 +560,13 @@ func validateExpr(raw json.RawMessage) error {
 		if err := primitiveArray(expr["values"], "values"); err != nil {
 			return err
 		}
+	case "contains":
+		if err := closedMembers(expr, "expression", "op", "field", "value"); err != nil {
+			return err
+		}
+		if !hasString(expr, "field") || !isPrimitive(expr["value"]) {
+			return fmt.Errorf("expression contains requires field and primitive value")
+		}
 	case "cond":
 		if err := closedMembers(expr, "expression", "op", "condition"); err != nil {
 			return err
@@ -628,6 +638,63 @@ func validateExpr(raw json.RawMessage) error {
 		}
 	default:
 		return fmt.Errorf("unsupported expression op %q", op)
+	}
+	return nil
+}
+
+// validateMembershipTargets rejects membership ops whose target field's
+// declared isEmpty rules them out. It walks the raw rules rather than the
+// converted model so that every expression position at any depth is covered,
+// including anyOf rules and eitherOf branches.
+func validateMembershipTargets(rules json.RawMessage, fieldDefs map[string]json.RawMessage) error {
+	isEmpty := make(map[string]string, len(fieldDefs))
+	for name, raw := range fieldDefs {
+		var def struct {
+			IsEmpty string `json:"isEmpty"`
+		}
+		if json.Unmarshal(raw, &def) == nil {
+			isEmpty[name] = def.IsEmpty
+		}
+	}
+	var tree any
+	if err := json.Unmarshal(rules, &tree); err != nil {
+		return err
+	}
+	return walkMembershipTargets(tree, isEmpty)
+}
+
+func walkMembershipTargets(node any, isEmpty map[string]string) error {
+	switch node := node.(type) {
+	case []any:
+		for _, child := range node {
+			if err := walkMembershipTargets(child, isEmpty); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		op, _ := node["op"].(string)
+		field, _ := node["field"].(string)
+		declared := isEmpty[field]
+		switch op {
+		case "in", "notIn", "fieldInCond":
+			if declared == "array" {
+				return fmt.Errorf("%q requires a scalar field; %q is declared \"isEmpty\": \"array\"", op, field)
+			}
+		case "contains":
+			if oneOf(declared, "string", "number", "boolean", "object") {
+				return fmt.Errorf("%q requires an array field; %q is declared \"isEmpty\": %q", op, field, declared)
+			}
+		}
+		keys := make([]string, 0, len(node))
+		for key := range node {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := walkMembershipTargets(node[key], isEmpty); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -1164,26 +1231,28 @@ func convertRequiresRule(sr specRuleDef, s *Schema) {
 		if !ok {
 			continue
 		}
-		checkRaw, ok := depMap["check"].(map[string]any)
-		if !ok {
-			continue
+		depRaw := depMap
+		defaultReason := "requires expression"
+		if checkRaw, ok := depMap["check"].(map[string]any); ok {
+			depRaw = checkRaw
+			defaultReason = "check failed"
 		}
-		checkExpr, err := rawToExpr(checkRaw)
-		if err != nil || checkExpr == nil {
+		depExpr, err := rawToExpr(depRaw)
+		if err != nil || depExpr == nil {
 			continue
 		}
 		if field, ok := depMap["field"].(string); ok {
-			checkExpr.Field = field
+			depExpr.Field = field
 		}
 		reason := sr.Reason
 		if reason == "" {
-			reason = "check failed"
+			reason = defaultReason
 		}
 		s.Rules = append(s.Rules, Rule{
 			Type:         "disables",
 			Field:        sr.Field,
 			Reason:       reason,
-			DisabledWhen: &Expr{Op: "not", Exprs: []Expr{*checkExpr}},
+			DisabledWhen: &Expr{Op: "not", Exprs: []Expr{*depExpr}},
 		})
 	}
 	reason := sr.Reason

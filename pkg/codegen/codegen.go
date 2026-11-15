@@ -130,7 +130,7 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		fields = []schema.FieldDef{}
 	}
 
-	rc := NewRuleCompiler(fieldTypes, condTypes, fields)
+	rc := NewRuleCompiler(fieldTypes, condTypes, fields).WithUnderlyingTypes(g.fieldUnderlyingTypes)
 	if g.allSchema != nil {
 		rc.WithSchema(g.allSchema)
 	}
@@ -153,7 +153,7 @@ func (g *Generator) Generate() (*GenerateResult, error) {
 		})
 	}
 	checkGen := NewCheckGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, fieldsTypeInfo, ruleData, oneOfGroups)
-	checkGen.WithExprCompiler(NewExprCompiler(fieldTypes, condTypes))
+	checkGen.WithExprCompiler(NewExprCompiler(fieldTypes, condTypes).WithUnderlyingTypes(g.fieldUnderlyingTypes))
 	helper, checkBody := checkGen.Generate()
 
 	challengeGen := NewChallengeGenerator(g.AvailabilityName, g.FieldsName, g.ConditionsName, g.Inferred.Fields, ruleData)
@@ -311,14 +311,31 @@ type FieldStatus struct {
 	Error     string   ` + "`json:\"error,omitempty\"`" + `
 }
 
-// contains reports whether a string slice contains a given value.
-func contains(s []string, v string) bool {
-	for _, ss := range s {
-		if ss == v {
+// contains reports whether s holds v.
+func contains[T comparable](s []T, v T) bool {
+	for _, item := range s {
+		if item == v {
 			return true
 		}
 	}
 	return false
+}
+
+// isTruthy reports whether a decoded JSON value is truthy: anything but
+// null, false, 0, and "".
+func isTruthy(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case float64:
+		return v != 0
+	case string:
+		return v != ""
+	default:
+		return true
+	}
 }
 
 {{- range $groupName, $branchList := .BranchGroups }}

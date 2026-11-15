@@ -151,17 +151,25 @@ func runCheck(t *testing.T, schemaName string, s *schema.Schema, source string, 
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"pkg"
 )
+
+func decode(name, data string, into any) {
+	if err := json.Unmarshal([]byte(data), into); err != nil {
+		fmt.Fprintf(os.Stderr, "decode %%s: %%v\n", name, err)
+		os.Exit(1)
+	}
+}
 
 func main() {
 	var f pkg.%sFields
 	var c pkg.%sConditions
 	var p pkg.%sFields
-	_ = json.Unmarshal([]byte(%s), &f)
-	_ = json.Unmarshal([]byte(%s), &c)
-	_ = json.Unmarshal([]byte(%s), &p)
+	decode("values", %s, &f)
+	decode("conditions", %s, &c)
+	decode("prev", %s, &p)
 	avail := pkg.Check(f, c, p)
 	_ = json.NewEncoder(os.Stdout).Encode(avail)
 }
