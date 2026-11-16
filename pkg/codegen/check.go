@@ -579,26 +579,56 @@ func (g *CheckGenerator) emitSatisfied(b *strings.Builder, gn string, ft FieldTy
 	}
 }
 
+// emitFair writes the expression that says whether the field's value is
+// fair. A field's fairWhen rules and its check rule all have to hold, and an
+// eitherOf whose branches are fairWhen needs one of them to hold.
 func (g *CheckGenerator) emitFair(b *strings.Builder, fd *FieldRuleData) {
-	// Handle eitherOf with fairWhen branches: fair = OR of branch expressions
+	var parts []string
+	// An eitherOf with fairWhen branches: fair = OR of branch expressions.
 	if fd.IsEitherOf && fd.IsFairOf && len(fd.Enabled.BranchExprs) > 0 {
-		var parts []string
-		for _, branchExpr := range fd.Enabled.BranchExprs {
-			parts = append(parts, branchExpr)
-		}
-		b.WriteString("(" + strings.Join(parts, " || ") + ")")
-		return
+		parts = append(parts, "("+strings.Join(fd.Enabled.BranchExprs, " || ")+")")
 	}
-	// Fair is true if fairWhen passes OR if check validator passes
-	// If there's a check rule, Fair depends on the validation result
+	parts = append(parts, g.fairParts(fd)...)
+	b.WriteString(fairExpr(parts))
+}
+
+// fairParts are the conditions the field's value has to meet: its check rule,
+// then every fairWhen rule the schema declares for it.
+func (g *CheckGenerator) fairParts(fd *FieldRuleData) []string {
+	var parts []string
 	if fd.Check.Expr != "" {
-		// check rule: Fair = checkExpr (validation passes)
-		b.WriteString(fd.Check.Expr)
-	} else if fd.Fair.Expr != "" {
-		b.WriteString(fd.Fair.Expr)
-	} else {
-		b.WriteString("true")
+		parts = append(parts, fd.Check.Expr)
 	}
+	for _, fair := range fd.Fairs {
+		if fair.Expr != "" {
+			parts = append(parts, fair.Expr)
+		}
+	}
+	return parts
+}
+
+// fairExpr renders the conjunction of parts as a Go boolean expression.
+//
+// One part stays an expression. More than one is a closure that returns early,
+// so each part keeps its own statement: two rules on a pointer field both spell
+// its nil check, and one expression holding both reads as a redundant and to
+// go vet, which go test runs.
+func fairExpr(parts []string) string {
+	switch len(parts) {
+	case 0:
+		return "true"
+	case 1:
+		return parts[0]
+	}
+	var b strings.Builder
+	b.WriteString("func() bool {\n")
+	for _, part := range parts {
+		b.WriteString("\t\t\t\tif !(")
+		b.WriteString(part)
+		b.WriteString(") {\n\t\t\t\t\treturn false\n\t\t\t\t}\n")
+	}
+	b.WriteString("\t\t\t\treturn true\n\t\t\t}()")
+	return b.String()
 }
 
 func (g *CheckGenerator) emitReason(b *strings.Builder, fd *FieldRuleData) {
@@ -710,14 +740,17 @@ func (g *CheckGenerator) addBlockingReasonChecks(b *strings.Builder, fd *FieldRu
 		b.WriteString(") }\n")
 	}
 
-	// fairWhen: reason when fair condition fails
-	if fd.Fair.Expr != "" && fd.Fair.Reason != "" {
+	// fairWhen: one reason per rule whose condition fails.
+	for _, fair := range fd.Fairs {
+		if fair.Expr == "" || fair.Reason == "" {
+			continue
+		}
 		b.WriteString("\t\t\t\tif !(")
-		b.WriteString(fd.Fair.Expr)
+		b.WriteString(fair.Expr)
 		b.WriteString(") && ")
-		b.WriteString(q(fd.Fair.Reason))
+		b.WriteString(q(fair.Reason))
 		b.WriteString(" != \"\" { reasons = append(reasons, ")
-		b.WriteString(q(fd.Fair.Reason))
+		b.WriteString(q(fair.Reason))
 		b.WriteString(") }\n")
 	}
 
@@ -881,19 +914,13 @@ func (g *CheckGenerator) fieldSatisfiedExpr(goName string) string {
 
 // fieldFairExpr returns the Go boolean expression that evaluates whether the
 // named dependency field is currently fair. The expression is inlined using
-// the dependency's fairWhen/check rule.
+// the dependency's fairWhen and check rules: all of them have to hold.
 func (g *CheckGenerator) fieldFairExpr(goName string) string {
 	depFD, ok := g.fieldRuleMap[goName]
 	if !ok {
 		return "true"
 	}
-	if depFD.Check.Expr != "" {
-		return depFD.Check.Expr
-	}
-	if depFD.Fair.Expr != "" {
-		return depFD.Fair.Expr
-	}
-	return "true"
+	return fairExpr(g.fairParts(depFD))
 }
 
 // depFullExpr returns a Go boolean expression representing "dependency is
